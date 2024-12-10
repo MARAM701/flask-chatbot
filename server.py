@@ -12,7 +12,10 @@ logger = logging.getLogger('server')
 
 # Create OpenAI client
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
+# Add this new root route
+@app.route('/')
+def home():
+    return "Server is running"
 # Add the report content here
 REPORT_CONTENT = """
 ملخص التقرير السنوي 
