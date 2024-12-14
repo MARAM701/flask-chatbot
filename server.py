@@ -4,7 +4,7 @@ import openai
 import logging
 import os
 app = Flask(__name__)
-CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True)
+CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500", "https://incredible-cannoli-de1183.netlify.app"], supports_credentials=True)
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
