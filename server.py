@@ -3,12 +3,20 @@ from flask_cors import CORS
 import openai
 import logging
 import os
-from docx import Document  # Add this import for .docx handling
+from docx import Document
 
 app = Flask(__name__)
-CORS(app, origins=["https://incredible-cannoli-de1183.netlify.app"], 
-     methods=["POST", "OPTIONS"], 
-     allow_headers=["Content-Type"])
+# Modified CORS setup
+CORS(app, 
+    resources={
+        r"/api/*": {
+            "origins": ["https://incredible-cannoli-de1183.netlify.app"],
+            "methods": ["POST", "OPTIONS"],
+            "allow_headers": ["Content-Type"],
+            "expose_headers": ["Access-Control-Allow-Origin"],
+            "supports_credentials": True
+        }
+    })
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -17,17 +25,14 @@ logger = logging.getLogger('server')
 # Create OpenAI client
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-def load_docx_content(file_path='arabic_file.docx'):
-    """
-    Load content from a .docx file
-    Returns the content as a string or a fallback message if the file cannot be read
-    """
+def load_docx_content():
     try:
-        doc = Document(file_path)
+        doc = Document('arabic_file.docx')
         content = '\n'.join([paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()])
+        logger.info("Successfully loaded document content")
         return content
     except Exception as e:
-        logger.error(f"Error reading .docx file: {str(e)}")
+        logger.error(f"Error reading document: {str(e)}")
         return "تعذر تحميل محتوى التقرير"
 
 # Load report content when server starts
@@ -51,7 +56,6 @@ def ask_question():
             
         logger.info(f"Received question: {question}")
 
-        # Use new OpenAI client syntax
         try:
             completion = client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -83,10 +87,11 @@ def ask_question():
                 ]
             )
             
-            answer = completion.choices[0].message.content
-            logger.info(f"Generated answer: {answer}")
-            
-            return jsonify({"answer": answer})
+            response = make_response(jsonify({"answer": completion.choices[0].message.content}))
+            response.headers.add('Access-Control-Allow-Origin', 'https://incredible-cannoli-de1183.netlify.app')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            return response
             
         except Exception as openai_error:
             logger.error(f"OpenAI API error: {str(openai_error)}")
@@ -102,9 +107,9 @@ def ask_question():
 
 def _build_cors_preflight_response():
     response = make_response()
-    response.headers.add("Access-Control-Allow-Origin", "https://incredible-cannoli-de1183.netlify.app")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-    response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+    response.headers.add('Access-Control-Allow-Origin', 'https://incredible-cannoli-de1183.netlify.app')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
     return response
 
 @app.route('/health', methods=['GET'])
