@@ -10,7 +10,7 @@ app = Flask(__name__)
 CORS(app, 
     resources={
         r"/api/*": {
-            "origins": ["https://incredible-cannoli-de1183.netlify.app"],
+            "origins": ["https://superlative-belekoy-1319b4.netlify.app"],
             "methods": ["POST", "OPTIONS"],
             "allow_headers": ["Content-Type"],
             "expose_headers": ["Access-Control-Allow-Origin"],
@@ -103,7 +103,7 @@ def ask_question():
             )
             
             response = make_response(jsonify({"answer": completion.choices[0].message.content}))
-            response.headers.add('Access-Control-Allow-Origin', 'https://incredible-cannoli-de1183.netlify.app')
+            response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
             response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
             return response
