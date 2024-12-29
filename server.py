@@ -122,7 +122,7 @@ def ask_question():
 
 def _build_cors_preflight_response():
     response = make_response()
-    response.headers.add('Access-Control-Allow-Origin', 'https://incredible-cannoli-de1183.netlify.app')
+    response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
     response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
     return response
