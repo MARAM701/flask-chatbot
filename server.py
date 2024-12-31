@@ -132,22 +132,28 @@ def ask_question():
             })
 
 
-        # First it creates a dictionary where each section contains its relevant items
+
+
+                # Format content for AI with sources and single-line formatting
         sections = {}
         for item in relevant_content:
             if item['section'] not in sections:
                 sections[item['section']] = []
             sections[item['section']].append(item)
         
-        # Then it creates formatted text for each section
+        # Create organized context with single lines
         context_parts = []
         for section, items in sections.items():
             section_texts = []
-            for item in items:
-                section_texts.append(f"{item['text']} (من صفحة {item['page']})")
-            context_parts.append(f"### {section}\n" + "\n".join(section_texts))
+            for i, item in enumerate(items, 1):
+                # Format each item in a single line
+                section_texts.append(f"{i}. {item['text']}")
+            
+            # Join all items with line breaks and add source
+            formatted_section = f"""### {section}\n{'\n'.join(section_texts)}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"""
+            context_parts.append(formatted_section)
         
-        # Finally joins all parts together
+        # Join all sections with double line breaks
         context = "\n\n".join(context_parts)
 
         try:
