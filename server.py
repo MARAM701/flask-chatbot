@@ -28,9 +28,21 @@ client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 class DocumentContent:
     def __init__(self):
         self.sections = {}
-        self.current_section = "مقدمة"
+        self.current_section = None  # Initialize with None instead of "مقدمة"
         self.current_page = 1
         self.content = []
+
+def is_heading(paragraph):
+    """Check if a paragraph is a heading based on style and formatting"""
+    # Check if it's a heading style
+    if paragraph.style and any(style in paragraph.style.name for style in ['Heading', 'Title', 'Header', 'العنوان', 'عنوان']):
+        return True
+    
+    # Check for bold formatting
+    if paragraph.runs and paragraph.runs[0].bold:
+        return True
+        
+    return False
 
 def load_docx_content():
     try:
@@ -40,10 +52,16 @@ def load_docx_content():
         # Regular expression for page markers
         page_marker_pattern = re.compile(r'Page\s+(\d+)')
         
+        # Log document structure for debugging
+        logger.info("Starting document processing")
+        
         for paragraph in doc.paragraphs:
             text = paragraph.text.strip()
             if not text:
                 continue
+            
+            # Log paragraph details
+            logger.info(f"Processing: {text[:50]}... | Style: {paragraph.style.name if paragraph.style else 'No style'}")
             
             # Check for page markers
             page_match = page_marker_pattern.search(text)
@@ -51,17 +69,19 @@ def load_docx_content():
                 doc_content.current_page = int(page_match.group(1))
                 continue
             
-            # Check if it's a heading (you might need to adjust this based on your document structure)
-            if paragraph.style.name.startswith('Heading'):
+            # Check if it's a heading using the enhanced detection
+            if is_heading(paragraph):
                 doc_content.current_section = text
+                logger.info(f"Found header: {text}")
                 continue
             
-            # Store the content with metadata
-            doc_content.content.append({
-                'text': text,
-                'section': doc_content.current_section,
-                'page': doc_content.current_page
-            })
+            # Only store content if we have a section
+            if doc_content.current_section:
+                doc_content.content.append({
+                    'text': text,
+                    'section': doc_content.current_section,
+                    'page': doc_content.current_page
+                })
         
         logger.info("Successfully loaded document content with sections and pages")
         return doc_content.content
@@ -75,11 +95,10 @@ DOCUMENT_CONTENT = load_docx_content()
 def find_relevant_content(question):
     """Find relevant paragraphs based on the question"""
     relevant_content = []
-    question_words = set(question.lower().split())
+    question_words = set(question.split())  # Remove .lower() for Arabic text
     
     for content in DOCUMENT_CONTENT:
-        # Simple keyword matching (you can enhance this)
-        content_words = set(content['text'].lower().split())
+        content_words = set(content['text'].split())  # Remove .lower() for Arabic text
         if any(word in content_words for word in question_words):
             relevant_content.append(content)
     
@@ -160,7 +179,6 @@ def ask_question():
                             
                         8. رفض الطلبات التي لا تلتزم بالقواعد أعلاه:
                             - إذا طلب المستخدم تجاوز أي من القواعد (مثل تقديم رأي أو صياغة مبتكرة)، أجب: "عذرًا، لا يمكنني القيام بذلك بناءً على القواعد المحددة."
-                        
                         """
                     },
                     {"role": "user", "content": question}
