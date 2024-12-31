@@ -132,33 +132,87 @@ def ask_question():
             })
 
 
-
-                # Format content for AI with sources - handles both multi-line and single-line responses
+                def parse_into_lines(text):
+            """Parse text into multiple lines intelligently"""
+            # Handle existing newlines
+            lines = []
+            for chunk in text.split('\n'):
+                chunk = chunk.strip()
+                if chunk:
+                    lines.append(chunk)
+        
+            if len(lines) > 1:
+                return lines
+        
+            # Handle numbered lists or bullet points
+            bullet_pattern = r'(?:\n|^)((?:\d+\.\s+)|(?:-\s+))'
+            bullets = re.split(bullet_pattern, text)
+        
+            if len(bullets) > 1:
+                tmp = []
+                buffer = ""
+                for part in bullets:
+                    part = part.strip()
+                    if re.match(r'(?:\d+\.\s+)|(?:-\s+)', part):
+                        if buffer:
+                            tmp.append(buffer)
+                        buffer = part
+                    else:
+                        buffer += " " + part
+                if buffer:
+                    tmp.append(buffer.strip())
+        
+                lines = [t.strip() for t in tmp if t.strip()]
+                if len(lines) > 1:
+                    return lines
+        
+            # Handle sentences for non-list text
+            sentences = re.split(r'\.\s+|\.$', text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            if len(sentences) > 1:
+                lines = []
+                for s in sentences:
+                    if not s.endswith('.'):
+                        s += '.'
+                    lines.append(s.strip())
+                return lines
+        
+            return [text.strip()]
+        
+        # Replace your existing content formatting code with this:
         sections = {}
         for item in relevant_content:
             if item['section'] not in sections:
                 sections[item['section']] = []
             sections[item['section']].append(item)
         
-        # Create organized context with flexible formatting
         context_parts = []
         for section, items in sections.items():
-            # For single-line responses (any short answer)
             if len(items) == 1:
-                formatted_section = items[0]['text'] + '\n---\n' + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
-            # For multi-line responses (lists)
+                # Single item: parse text into lines
+                text_lines = parse_into_lines(items[0]['text'])
+                
+                if len(text_lines) > 1:
+                    # If multiple lines detected, number them
+                    enumerated_lines = []
+                    for i, line in enumerate(text_lines, 1):
+                        enumerated_lines.append(f"{i}. {line}")
+                    formatted_section = "\n".join(enumerated_lines)
+                else:
+                    # Single line response
+                    formatted_section = text_lines[0]
+        
+                formatted_section += "\n---\n" + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
             else:
+                # Multiple items
                 section_texts = []
                 for i, item in enumerate(items, 1):
                     section_texts.append(f"{i}. {item['text']}")
-                # Join texts and add source reference
-                joined_texts = '\n'.join(section_texts)
-                formatted_section = joined_texts + '\n---\n' + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
-            
+                formatted_section = "\n".join(section_texts) + "\n---\n" + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
+        
             context_parts.append(formatted_section)
         
-        # Join all sections with double line breaks
-        context = '\n\n'.join(context_parts)
+        context = "\n\n".join(context_parts)
 
         try:
             completion = client.chat.completions.create(
