@@ -132,25 +132,27 @@ def ask_question():
             })
 
 
-
-
-                # Format content for AI with sources and single-line formatting
+                # Format content for AI with sources - handles both multi-line and single-line responses
         sections = {}
         for item in relevant_content:
             if item['section'] not in sections:
                 sections[item['section']] = []
             sections[item['section']].append(item)
         
-        # Create organized context with single lines
+        # Create organized context with flexible formatting
         context_parts = []
         for section, items in sections.items():
-            section_texts = []
-            for i, item in enumerate(items, 1):
-                # Format each item in a single line
-                section_texts.append(f"{i}. {item['text']}")
+            # For single-line responses (any short answer)
+            if len(items) == 1:
+                formatted_section = f"{items[0]['text']}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"
+            # For multi-line responses (lists)
+            else:
+                section_texts = []
+                for i, item in enumerate(items, 1):
+                    section_texts.append(f"{i}. {item['text']}")
+                # Join texts with newline and add source
+                formatted_section = f"{'\n'.join(section_texts)}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"
             
-            # Join all items with line breaks and add source
-            formatted_section = f"""### {section}\n{'\n'.join(section_texts)}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"""
             context_parts.append(formatted_section)
         
         # Join all sections with double line breaks
