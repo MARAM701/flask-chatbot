@@ -132,6 +132,7 @@ def ask_question():
             })
 
 
+
                 # Format content for AI with sources - handles both multi-line and single-line responses
         sections = {}
         for item in relevant_content:
@@ -144,19 +145,20 @@ def ask_question():
         for section, items in sections.items():
             # For single-line responses (any short answer)
             if len(items) == 1:
-                formatted_section = f"{items[0]['text']}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"
+                formatted_section = items[0]['text'] + '\n---\n' + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
             # For multi-line responses (lists)
             else:
                 section_texts = []
                 for i, item in enumerate(items, 1):
                     section_texts.append(f"{i}. {item['text']}")
-                # Join texts with newline and add source
-                formatted_section = f"{'\n'.join(section_texts)}\n---\n📖 المصدر: {section} - صفحة {items[0]['page']}"
+                # Join texts and add source reference
+                joined_texts = '\n'.join(section_texts)
+                formatted_section = joined_texts + '\n---\n' + f"📖 المصدر: {section} - صفحة {items[0]['page']}"
             
             context_parts.append(formatted_section)
         
         # Join all sections with double line breaks
-        context = "\n\n".join(context_parts)
+        context = '\n\n'.join(context_parts)
 
         try:
             completion = client.chat.completions.create(
