@@ -3,4 +3,5 @@ flask-cors
 openai
 gunicorn
 python-docx
-tiktoken
+
+
