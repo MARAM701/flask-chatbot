@@ -5,10 +5,6 @@ import logging
 import os
 from docx import Document
 import re
-from sentence_transformers import SentenceTransformer, util
-import torch
-import numpy as np
-import gc
 
 app = Flask(__name__)
 CORS(app, 
@@ -29,49 +25,20 @@ logger = logging.getLogger('server')
 # Create OpenAI client
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-# Initialize model with a smaller multilingual model that handles Arabic well
-try:
-    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    model.to('cpu')  # Ensure model is on CPU
-except Exception as e:
-    logger.error(f"Error loading model: {str(e)}")
-
 class DocumentContent:
     def __init__(self):
         self.sections = {}
-        self.current_section = None
+        self.current_section = None  # Initialize with None instead of "مقدمة"
         self.current_page = 1
         self.content = []
-        self.embeddings = None
-
-    def compute_embeddings(self, batch_size=4):
-        """Compute embeddings in batches to save memory"""
-        texts = [item['text'] for item in self.content]
-        all_embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            
-            # Compute embeddings for batch
-            with torch.no_grad():
-                embeddings = model.encode(batch_texts, convert_to_tensor=True, show_progress_bar=False)
-                all_embeddings.append(embeddings.cpu())
-
-            # Clear memory
-            gc.collect()
-
-        # Concatenate all batches
-        self.embeddings = torch.cat(all_embeddings, dim=0)
-        
-        # Final memory cleanup
-        gc.collect()
-        return self.embeddings
 
 def is_heading(paragraph):
     """Check if a paragraph is a heading based on style and formatting"""
+    # Check if it's a heading style
     if paragraph.style and any(style in paragraph.style.name for style in ['Heading', 'Title', 'Header', 'العنوان', 'عنوان']):
         return True
     
+    # Check for bold formatting
     if paragraph.runs and paragraph.runs[0].bold:
         return True
         
@@ -82,8 +49,10 @@ def load_docx_content():
         doc = Document('arabic_file.docx')
         doc_content = DocumentContent()
         
+        # Regular expression for page markers
         page_marker_pattern = re.compile(r'Page\s+(\d+)')
         
+        # Log document structure for debugging
         logger.info("Starting document processing")
         
         for paragraph in doc.paragraphs:
@@ -91,18 +60,22 @@ def load_docx_content():
             if not text:
                 continue
             
+            # Log paragraph details
             logger.info(f"Processing: {text[:50]}... | Style: {paragraph.style.name if paragraph.style else 'No style'}")
             
+            # Check for page markers
             page_match = page_marker_pattern.search(text)
             if page_match:
                 doc_content.current_page = int(page_match.group(1))
                 continue
             
+            # Check if it's a heading using the enhanced detection
             if is_heading(paragraph):
                 doc_content.current_section = text
                 logger.info(f"Found header: {text}")
                 continue
             
+            # Only store content if we have a section
             if doc_content.current_section:
                 doc_content.content.append({
                     'text': text,
@@ -110,40 +83,26 @@ def load_docx_content():
                     'page': doc_content.current_page
                 })
         
-        # Compute embeddings in batches
-        doc_content.compute_embeddings()
-        logger.info("Successfully loaded document content and computed embeddings")
-        return doc_content
+        logger.info("Successfully loaded document content with sections and pages")
+        return doc_content.content
     except Exception as e:
         logger.error(f"Error reading document: {str(e)}")
-        return None
+        return []
 
 # Load report content when server starts
 DOCUMENT_CONTENT = load_docx_content()
 
-def find_relevant_content(question, top_k=3):
-    """Find relevant paragraphs using semantic search"""
-    try:
-        # Encode the question
-        with torch.no_grad():
-            question_embedding = model.encode(question, convert_to_tensor=True, show_progress_bar=False)
-
-        # Calculate similarities using pytorch utility
-        cos_scores = util.pytorch_cos_sim(question_embedding, DOCUMENT_CONTENT.embeddings)[0]
-        
-        # Get top_k most similar indices
-        top_results = torch.topk(cos_scores, k=min(top_k, len(DOCUMENT_CONTENT.content)))
-        
-        # Get the relevant content
-        relevant_content = [DOCUMENT_CONTENT.content[idx] for idx in top_results.indices]
-        
-        # Memory cleanup
-        gc.collect()
-        
-        return relevant_content
-    except Exception as e:
-        logger.error(f"Error in semantic search: {str(e)}")
-        return []
+def find_relevant_content(question):
+    """Find relevant paragraphs based on the question"""
+    relevant_content = []
+    question_words = set(question.split())  # Remove .lower() for Arabic text
+    
+    for content in DOCUMENT_CONTENT:
+        content_words = set(content['text'].split())  # Remove .lower() for Arabic text
+        if any(word in content_words for word in question_words):
+            relevant_content.append(content)
+    
+    return relevant_content
 
 @app.route('/')
 def home():
@@ -163,15 +122,17 @@ def ask_question():
             
         logger.info(f"Received question: {question}")
         
-        # Find relevant content using semantic search
+        # Find relevant content
         relevant_content = find_relevant_content(question)
         
+        # If no relevant content found
         if not relevant_content:
             return jsonify({
                 "answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."
             })
 
-        # Format content for AI with sources
+
+          # Format content for AI with sources
         context = "\n\n".join([
             f"{item['text']}\n📖 المصدر: {item['section']} - صفحة {item['page']}"
             for item in relevant_content
@@ -256,5 +217,4 @@ def health_check():
     return jsonify({"status": "healthy"}), 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True, port=5000) 
