@@ -44,7 +44,7 @@ def is_heading(paragraph):
 
 def load_docx_content():
     try:
-        doc = Document('arabic_file.docx')
+        doc = Document(' arabic2_file.docx')
         doc_content = DocumentContent()
         page_marker_pattern = re.compile(r'Page\s+(\d+)')
         logger.info("Starting document processing")
