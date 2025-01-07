@@ -2,4 +2,7 @@ flask
 flask-cors
 openai
 gunicorn 
-python-docx
+python-docx 
+sentence-transformers
+faiss-cpu
+torch
