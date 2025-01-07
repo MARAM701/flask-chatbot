@@ -46,7 +46,7 @@ def is_heading(paragraph):
 
 def load_docx_content():
     try:
-        doc = Document('arabic2_file.docx')
+        doc = Document('arabic_file.docx')
         doc_content = DocumentContent()
         
         # Regular expression for page markers
