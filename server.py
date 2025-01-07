@@ -5,6 +5,10 @@ import logging
 import os
 from docx import Document
 import re
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import torch
 
 app = Flask(__name__)
 CORS(app, 
@@ -25,20 +29,27 @@ logger = logging.getLogger('server')
 # Create OpenAI client
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
+# Initialize Arabic BERT model for semantic search
+model = SentenceTransformer('UBC-NLP/ARBERT')
+
 class DocumentContent:
     def __init__(self):
         self.sections = {}
-        self.current_section = None  # Initialize with None instead of "مقدمة"
+        self.current_section = None
         self.current_page = 1
         self.content = []
+        self.embeddings = None
+
+    def compute_embeddings(self):
+        """Compute embeddings for all document content"""
+        texts = [item['text'] for item in self.content]
+        self.embeddings = model.encode(texts, convert_to_tensor=True)
 
 def is_heading(paragraph):
     """Check if a paragraph is a heading based on style and formatting"""
-    # Check if it's a heading style
     if paragraph.style and any(style in paragraph.style.name for style in ['Heading', 'Title', 'Header', 'العنوان', 'عنوان']):
         return True
     
-    # Check for bold formatting
     if paragraph.runs and paragraph.runs[0].bold:
         return True
         
@@ -49,10 +60,8 @@ def load_docx_content():
         doc = Document('arabic_file.docx')
         doc_content = DocumentContent()
         
-        # Regular expression for page markers
         page_marker_pattern = re.compile(r'Page\s+(\d+)')
         
-        # Log document structure for debugging
         logger.info("Starting document processing")
         
         for paragraph in doc.paragraphs:
@@ -60,22 +69,18 @@ def load_docx_content():
             if not text:
                 continue
             
-            # Log paragraph details
             logger.info(f"Processing: {text[:50]}... | Style: {paragraph.style.name if paragraph.style else 'No style'}")
             
-            # Check for page markers
             page_match = page_marker_pattern.search(text)
             if page_match:
                 doc_content.current_page = int(page_match.group(1))
                 continue
             
-            # Check if it's a heading using the enhanced detection
             if is_heading(paragraph):
                 doc_content.current_section = text
                 logger.info(f"Found header: {text}")
                 continue
             
-            # Only store content if we have a section
             if doc_content.current_section:
                 doc_content.content.append({
                     'text': text,
@@ -83,26 +88,39 @@ def load_docx_content():
                     'page': doc_content.current_page
                 })
         
-        logger.info("Successfully loaded document content with sections and pages")
-        return doc_content.content
+        # Compute embeddings for document content
+        doc_content.compute_embeddings()
+        logger.info("Successfully loaded document content and computed embeddings")
+        return doc_content
     except Exception as e:
         logger.error(f"Error reading document: {str(e)}")
-        return []
+        return None
 
 # Load report content when server starts
 DOCUMENT_CONTENT = load_docx_content()
 
-def find_relevant_content(question):
-    """Find relevant paragraphs based on the question"""
-    relevant_content = []
-    question_words = set(question.split())  # Remove .lower() for Arabic text
-    
-    for content in DOCUMENT_CONTENT:
-        content_words = set(content['text'].split())  # Remove .lower() for Arabic text
-        if any(word in content_words for word in question_words):
-            relevant_content.append(content)
-    
-    return relevant_content
+def find_relevant_content(question, top_k=5):
+    """Find relevant paragraphs using semantic search"""
+    try:
+        # Encode the question
+        question_embedding = model.encode(question, convert_to_tensor=True)
+        
+        # Calculate similarities
+        similarities = cosine_similarity(
+            question_embedding.cpu().numpy().reshape(1, -1),
+            DOCUMENT_CONTENT.embeddings.cpu().numpy()
+        )[0]
+        
+        # Get top_k most similar indices
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        
+        # Get the relevant content
+        relevant_content = [DOCUMENT_CONTENT.content[idx] for idx in top_indices]
+        
+        return relevant_content
+    except Exception as e:
+        logger.error(f"Error in semantic search: {str(e)}")
+        return []
 
 @app.route('/')
 def home():
@@ -122,17 +140,15 @@ def ask_question():
             
         logger.info(f"Received question: {question}")
         
-        # Find relevant content
+        # Find relevant content using semantic search
         relevant_content = find_relevant_content(question)
         
-        # If no relevant content found
         if not relevant_content:
             return jsonify({
                 "answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."
             })
 
-
-          # Format content for AI with sources
+        # Format content for AI with sources
         context = "\n\n".join([
             f"{item['text']}\n📖 المصدر: {item['section']} - صفحة {item['page']}"
             for item in relevant_content
