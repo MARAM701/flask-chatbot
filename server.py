@@ -6,15 +6,17 @@ import os
 from docx import Document
 import re
 from pathlib import Path
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+from collections import defaultdict
 
-# Set up logging with more detailed format
+# Set up logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('server')
 
-# Get document path from environment variable or use default
 DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 
 app = Flask(__name__)
@@ -29,19 +31,20 @@ CORS(app,
         }
     })
 
-# Create OpenAI client
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 class DocumentContent:
     def __init__(self):
-        self.sections = {}
+        self.sections = defaultdict(list)
         self.current_section = None
         self.current_page = 1
         self.content = []
+        self.vectorizer = None
+        self.vectors = None
+        self.section_text = defaultdict(str)
 
 def is_heading(paragraph):
-    """Check if a paragraph is a heading based on style and formatting"""
-    if paragraph.style and any(style in paragraph.style.name for style in ['Heading', 'Title', 'Header', 'العنوان', 'عنوان']):
+    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
         return True
     
     if paragraph.runs and paragraph.runs[0].bold:
@@ -49,83 +52,154 @@ def is_heading(paragraph):
         
     return False
 
+def process_text_chunk(text, max_length=1000):
+    """Split text into chunks if too long"""
+    if len(text) <= max_length:
+        return [text]
+    
+    sentences = text.split('.')
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for sentence in sentences:
+        sentence = sentence.strip() + '.'
+        if current_length + len(sentence) > max_length and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(sentence)
+        current_length += len(sentence)
+    
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks
+
 def load_docx_content():
     try:
-        # Log current working directory and available files
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
-        logger.info(f"Files in directory: {os.listdir(current_dir)}")
         
-        # Get absolute path of the document
-        doc_path = Path(DOCUMENT_PATH).resolve()
-        logger.info(f"Attempting to load document from: {doc_path}")
+        # Find the docx file ignoring leading/trailing whitespace
+        files = os.listdir(current_dir)
+        docx_file = next((f for f in files if f.strip() == 'arabic_file.docx'), None)
+        if not docx_file:
+            docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
         
-        # Check if file exists
-        if not doc_path.exists():
-            logger.error(f"Document not found at path: {doc_path}")
-            return []
+        if not docx_file:
+            logger.error("Document not found")
+            return None
             
-        doc = Document(str(doc_path))
+        doc_path = os.path.join(current_dir, docx_file)
+        logger.info(f"Loading document from: {doc_path}")
+        
+        doc = Document(doc_path)
         doc_content = DocumentContent()
         
-        # Regular expression for page markers
         page_marker_pattern = re.compile(r'Page\s+(\d+)')
-        
-        logger.info("Starting document processing")
+        current_text = ""
         
         for paragraph in doc.paragraphs:
             text = paragraph.text.strip()
             if not text:
                 continue
             
-            # Log paragraph details
-            logger.info(f"Processing: {text[:50]}... | Style: {paragraph.style.name if paragraph.style else 'No style'}")
-            
-            # Check for page markers
             page_match = page_marker_pattern.search(text)
             if page_match:
                 doc_content.current_page = int(page_match.group(1))
                 continue
             
-            # Check if it's a heading
             if is_heading(paragraph):
+                # Process previous section
+                if current_text and doc_content.current_section:
+                    chunks = process_text_chunk(current_text)
+                    for chunk in chunks:
+                        doc_content.sections[doc_content.current_section].append({
+                            'text': chunk,
+                            'page': doc_content.current_page
+                        })
+                    doc_content.section_text[doc_content.current_section] = current_text
+                
                 doc_content.current_section = text
-                logger.info(f"Found header: {text}")
+                current_text = ""
                 continue
             
-            # Store content if we have a section
             if doc_content.current_section:
-                doc_content.content.append({
-                    'text': text,
-                    'section': doc_content.current_section,
+                current_text += " " + text
+        
+        # Process final section
+        if current_text and doc_content.current_section:
+            chunks = process_text_chunk(current_text)
+            for chunk in chunks:
+                doc_content.sections[doc_content.current_section].append({
+                    'text': chunk,
                     'page': doc_content.current_page
                 })
+            doc_content.section_text[doc_content.current_section] = current_text
         
-        logger.info(f"Successfully loaded document with {len(doc_content.content)} content items")
-        return doc_content.content
+        # Create flat content list for vectorization
+        for section, chunks in doc_content.sections.items():
+            for chunk in chunks:
+                doc_content.content.append({
+                    'text': chunk['text'],
+                    'section': section,
+                    'page': chunk['page']
+                })
+        
+        # Initialize TF-IDF
+        doc_content.vectorizer = TfidfVectorizer(
+            max_features=5000,
+            ngram_range=(1, 2)
+        )
+        texts = [item['text'] for item in doc_content.content]
+        doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
+        
+        logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
+        return doc_content
+    
     except Exception as e:
-        logger.error(f"Error reading document: {str(e)}", exc_info=True)
+        logger.error(f"Error processing document: {str(e)}", exc_info=True)
+        return None
+
+# Initialize document processor
+DOC_PROCESSOR = load_docx_content()
+
+def find_relevant_content(question, top_k=3):
+    """Find relevant content using TF-IDF similarity"""
+    try:
+        if not DOC_PROCESSOR:
+            return []
+        
+        # Transform question
+        question_vector = DOC_PROCESSOR.vectorizer.transform([question])
+        
+        # Calculate similarities
+        similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
+        
+        # Get top k most similar chunks
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        
+        relevant_content = []
+        seen_sections = set()
+        
+        for idx in top_indices:
+            content = DOC_PROCESSOR.content[idx]
+            if content['section'] not in seen_sections:
+                # Get full section text
+                content['text'] = DOC_PROCESSOR.section_text[content['section']]
+                relevant_content.append(content)
+                seen_sections.add(content['section'])
+        
+        return relevant_content
+    
+    except Exception as e:
+        logger.error(f"Error in search: {str(e)}")
         return []
-
-# Load report content when server starts
-DOCUMENT_CONTENT = load_docx_content()
-
-def find_relevant_content(question):
-    """Find relevant paragraphs based on the question"""
-    relevant_content = []
-    question_words = set(question.split())
-    
-    for content in DOCUMENT_CONTENT:
-        content_words = set(content['text'].split())
-        if any(word in content_words for word in question_words):
-            relevant_content.append(content)
-    
-    return relevant_content
 
 @app.route('/')
 def home():
-    # Add more detailed status information
-    doc_status = "Document loaded successfully" if DOCUMENT_CONTENT else "Document not loaded"
+    doc_status = "Document loaded successfully" if DOC_PROCESSOR else "Document not loaded"
     return jsonify({
         "status": "Server is running",
         "document_status": doc_status,
@@ -146,8 +220,7 @@ def ask_question():
             
         logger.info(f"Received question: {question}")
         
-        # Check if document is loaded
-        if not DOCUMENT_CONTENT:
+        if not DOC_PROCESSOR:
             return jsonify({
                 "error": "عذراً، لم يتم تحميل الوثيقة بشكل صحيح. الرجاء التحقق من وجود الملف."
             }), 500
@@ -242,7 +315,7 @@ def _build_cors_preflight_response():
 def health_check():
     return jsonify({
         "status": "healthy",
-        "document_loaded": bool(DOCUMENT_CONTENT),
+        "document_loaded": bool(DOC_PROCESSOR),
         "document_path": DOCUMENT_PATH
     }), 200
 
