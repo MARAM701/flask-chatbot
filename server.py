@@ -3,7 +3,7 @@ from flask_cors import CORS
 import openai
 import logging
 import os
-import PyPDF2
+import pdfplumber
 import re
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -50,7 +50,7 @@ def is_heading(text):
     if not text or len(text.split()) > 10:
         return False
         
-    # Common Arabic heading indicators with variations
+    # Common Arabic heading indicators
     heading_indicators = [
         'باب', 'فصل', 'قسم', 'العنوان', 'عنوان',
         'المبحث', 'المطلب', 'الفقرة', 'النقطة',
@@ -62,7 +62,6 @@ def is_heading(text):
     has_number = bool(re.search(r'[\d٠-٩]', text))
     has_indicator = any(indicator in text for indicator in heading_indicators)
     
-    # Return true if either condition is met
     return has_number or has_indicator
 
 def clean_arabic_text(text):
@@ -121,7 +120,7 @@ def process_text_chunk(text, max_length=800):
     return chunks
 
 def load_pdf_content():
-    """Enhanced PDF content loading with better Arabic support"""
+    """Load PDF content using pdfplumber"""
     try:
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
@@ -138,44 +137,25 @@ def load_pdf_content():
         
         doc_content = DocumentContent()
         
-        try:
-            with open(doc_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
+        with pdfplumber.open(doc_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                doc_content.current_page = page_num
                 
-                for page_num in range(len(pdf_reader.pages)):
-                    doc_content.current_page = page_num + 1
-                    page = pdf_reader.pages[page_num]
+                # Extract text with better handling of Arabic
+                text = page.extract_text(x_tolerance=3, y_tolerance=3)
+                if not text:
+                    continue
                     
-                    try:
-                        text = page.extract_text()
-                        if not text:
-                            continue
-                            
-                        text = clean_arabic_text(text)
-                        lines = text.split('\n')
-                        current_text = []
+                # Process text line by line
+                lines = text.split('\n')
+                current_text = []
+                
+                for line in lines:
+                    line = clean_arabic_text(line)
+                    if not line:
+                        continue
                         
-                        for line in lines:
-                            line = line.strip()
-                            if not line:
-                                continue
-                                
-                            if is_heading(line):
-                                if doc_content.last_heading and current_text:
-                                    section_text = ' '.join(current_text)
-                                    for chunk in process_text_chunk(section_text):
-                                        doc_content.sections[doc_content.last_heading].append({
-                                            'text': chunk,
-                                            'page': doc_content.current_page
-                                        })
-                                    doc_content.section_text[doc_content.last_heading] = section_text
-                                
-                                doc_content.last_heading = line
-                                current_text = []
-                            elif doc_content.last_heading:
-                                current_text.append(line)
-                        
-                        # Process remaining text for the current page
+                    if is_heading(line):
                         if doc_content.last_heading and current_text:
                             section_text = ' '.join(current_text)
                             for chunk in process_text_chunk(section_text):
@@ -184,37 +164,44 @@ def load_pdf_content():
                                     'page': doc_content.current_page
                                 })
                             doc_content.section_text[doc_content.last_heading] = section_text
-                            
-                    except Exception as page_error:
-                        logger.error(f"Error processing page {page_num + 1}: {str(page_error)}")
-                        continue
+                        
+                        doc_content.last_heading = line
+                        current_text = []
+                    elif doc_content.last_heading:
+                        current_text.append(line)
                 
-                # Create optimized content list
-                for section, chunks in doc_content.sections.items():
-                    for chunk in chunks:
-                        doc_content.content.append({
-                            'text': chunk['text'],
-                            'section': section,
-                            'page': chunk['page']
+                # Process remaining text for the current page
+                if doc_content.last_heading and current_text:
+                    section_text = ' '.join(current_text)
+                    for chunk in process_text_chunk(section_text):
+                        doc_content.sections[doc_content.last_heading].append({
+                            'text': chunk,
+                            'page': doc_content.current_page
                         })
-                
-                # Initialize TF-IDF with Arabic-specific settings
-                if doc_content.content:
-                    doc_content.vectorizer = TfidfVectorizer(
-                        max_features=5000,
-                        ngram_range=(1, 3),  # Increased to catch longer phrases
-                        analyzer='word',
-                        token_pattern=r'(?u)\b\w\w+\b'  # Better for Arabic
-                    )
-                    texts = [item['text'] for item in doc_content.content]
-                    doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
-                    
-                    logger.info(f"PDF document processed successfully with {len(doc_content.content)} chunks")
-                    return doc_content
-                    
-        except PyPDF2.PdfReadError as pdf_error:
-            logger.error(f"PDF reading error: {str(pdf_error)}")
-            return None
+                    doc_content.section_text[doc_content.last_heading] = section_text
+
+        # Create optimized content list
+        for section, chunks in doc_content.sections.items():
+            for chunk in chunks:
+                doc_content.content.append({
+                    'text': chunk['text'],
+                    'section': section,
+                    'page': chunk['page']
+                })
+        
+        # Initialize TF-IDF with Arabic-specific settings
+        if doc_content.content:
+            doc_content.vectorizer = TfidfVectorizer(
+                max_features=5000,
+                ngram_range=(1, 3),
+                analyzer='word',
+                token_pattern=r'(?u)\b\w\w+\b'
+            )
+            texts = [item['text'] for item in doc_content.content]
+            doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
+            
+            logger.info(f"PDF document processed successfully with {len(doc_content.content)} chunks")
+            return doc_content
             
     except Exception as e:
         logger.error(f"Error processing PDF document: {str(e)}", exc_info=True)
@@ -224,7 +211,7 @@ def load_pdf_content():
 DOC_PROCESSOR = load_pdf_content()
 
 def find_relevant_content(question, top_k=3):
-    """Enhanced content finding with better relevance"""
+    """Find relevant content using TF-IDF similarity"""
     try:
         if not DOC_PROCESSOR:
             return []
@@ -236,8 +223,8 @@ def find_relevant_content(question, top_k=3):
         # Calculate similarities
         similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
         
-        # Get top k most similar chunks with higher threshold
-        threshold = 0.1  # Minimum similarity threshold
+        # Get top k most similar chunks
+        threshold = 0.1
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         
         relevant_content = []
@@ -305,6 +292,7 @@ def ask_question():
             f"{item['text']}\n📖 المصدر: {item['section']} - صفحة {item['page']}"
             for item in relevant_content
         ])      
+
         try:
             completion = client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -352,8 +340,8 @@ def ask_question():
                     },
                     {"role": "user", "content": question}
                 ],
-                temperature=0.7,  # Added for better response consistency
-                max_tokens=1000   # Increased for longer responses
+                temperature=0.7,
+                max_tokens=1000
             )
             
             response = make_response(jsonify({"answer": completion.choices[0].message.content}))
