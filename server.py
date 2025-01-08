@@ -3,7 +3,7 @@ from flask_cors import CORS
 import openai
 import logging
 import os
-import pdfplumber
+from docx import Document
 import re
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.pdf')
+DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 
 app = Flask(__name__)
 CORS(app, 
@@ -42,164 +42,103 @@ class DocumentContent:
         self.vectorizer = None
         self.vectors = None
         self.section_text = defaultdict(str)
-        self.last_heading = None
 
-def is_heading(text):
-    """Enhanced heading detection for Arabic text"""
-    # Check for empty or too long text
-    if not text or len(text.split()) > 10:
-        return False
+def is_heading(paragraph):
+    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
+        return True
+    
+    if paragraph.runs and paragraph.runs[0].bold:
+        return True
         
-    # Common Arabic heading indicators
-    heading_indicators = [
-        'باب', 'فصل', 'قسم', 'العنوان', 'عنوان',
-        'المبحث', 'المطلب', 'الفقرة', 'النقطة',
-        'أولاً', 'ثانياً', 'ثالثاً', 'رابعاً',
-        'المحور', 'القسم', 'الجزء', 'الفرع'
-    ]
-    
-    # Check for numbering and heading indicators
-    has_number = bool(re.search(r'[\d٠-٩]', text))
-    has_indicator = any(indicator in text for indicator in heading_indicators)
-    
-    return has_number or has_indicator
+    return False
 
-def clean_arabic_text(text):
-    """Clean and normalize Arabic text with improved handling"""
-    if not text:
-        return ""
-    
-    # Normalize Arabic characters
-    text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
-    text = text.replace('ة', 'ه').replace('ي', 'ى')
-    text = text.replace('ؤ', 'و').replace('ئ', 'ي')
-    
-    # Remove tashkeel (diacritics)
-    tashkeel = ['ّ', 'َ', 'ً', 'ُ', 'ٌ', 'ِ', 'ٍ', 'ْ']
-    for mark in tashkeel:
-        text = text.replace(mark, '')
-    
-    # Remove special characters but keep Arabic punctuation
-    text = ''.join(c for c in text if c.isprintable() or c in ['،', '؛'])
-    
-    # Normalize whitespace
-    text = ' '.join(text.split())
-    
-    return text.strip()
-
-def process_text_chunk(text, max_length=800):
-    """Process text into chunks with improved Arabic handling"""
-    if not text:
-        return []
-        
-    text = clean_arabic_text(text)
+def process_text_chunk(text, max_length=1000):
+    """Split text into chunks if too long"""
     if len(text) <= max_length:
         return [text]
     
-    # Split on Arabic sentence endings
-    sentence_endings = ['.', '؟', '!', '।', '۔']
+    sentences = text.split('.')
     chunks = []
     current_chunk = []
     current_length = 0
     
-    # Create a regex pattern for sentence splitting
-    pattern = f"([{''.join(sentence_endings)}])"
-    sentences = re.split(pattern, text)
-    
-    current_sentence = []
-    for part in sentences:
-        if part in sentence_endings:
-            current_sentence.append(part)
-            sentence = ''.join(current_sentence)
-            if current_length + len(sentence) > max_length and current_chunk:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = []
-                current_length = 0
-            current_chunk.append(sentence)
-            current_length += len(sentence)
-            current_sentence = []
-        else:
-            current_sentence.append(part)
+    for sentence in sentences:
+        sentence = sentence.strip() + '.'
+        if current_length + len(sentence) > max_length and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(sentence)
+        current_length += len(sentence)
     
     if current_chunk:
         chunks.append(' '.join(current_chunk))
     
     return chunks
 
-def load_pdf_content():
-    """Load PDF content using pdfplumber"""
+def load_docx_content():
     try:
         current_dir = os.getcwd()
-        logger.debug("====== Starting PDF Loading Process ======")
-        logger.debug(f"Current working directory: {current_dir}")
+        logger.info(f"Current working directory: {current_dir}")
         
+        # Find the docx file ignoring leading/trailing whitespace
         files = os.listdir(current_dir)
-        logger.debug(f"Files in directory: {files}")
-        pdf_file = next((f for f in files if f.strip() == 'arabic_file.pdf'), None)
+        docx_file = next((f for f in files if f.strip() == 'arabic_file.docx'), None)
+        if not docx_file:
+            docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
         
-        if pdf_file:
-            logger.debug(f"Found PDF file: {pdf_file}")
-        else:
-            logger.error("PDF file 'arabic_file.pdf' not found in directory")
-        
-        if not pdf_file:
-            logger.error("PDF document not found")
+        if not docx_file:
+            logger.error("Document not found")
             return None
             
-        doc_path = os.path.join(current_dir, pdf_file)
-        logger.info(f"Loading PDF document from: {doc_path}")
+        doc_path = os.path.join(current_dir, docx_file)
+        logger.info(f"Loading document from: {doc_path}")
         
+        doc = Document(doc_path)
         doc_content = DocumentContent()
         
-        with pdfplumber.open(doc_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                doc_content.current_page = page_num
-                
-                # Extract text with better handling of Arabic
-                text = page.extract_text(x_tolerance=3, y_tolerance=3)
-                if not text:
-                    logger.debug(f"No text extracted from page {page_num}")
-                    continue
-                    
-                logger.debug(f"====== Page {page_num} Content Sample ======")
-                logger.debug(f"First 200 characters: {text[:200]}")
-                logger.debug(f"Text length: {len(text)} characters")
-                    
-                # Process text line by line
-                lines = text.split('\n')
-                current_text = []
-                
-                for line in lines:
-                    line = clean_arabic_text(line)
-                    if not line:
-                        continue
-                        
-                    if is_heading(line):
-                        if doc_content.last_heading and current_text:
-                            section_text = ' '.join(current_text)
-                            for chunk in process_text_chunk(section_text):
-                                doc_content.sections[doc_content.last_heading].append({
-                                    'text': chunk,
-                                    'page': doc_content.current_page
-                                })
-                            doc_content.section_text[doc_content.last_heading] = section_text
-                        
-                        doc_content.last_heading = line
-                        current_text = []
-                    elif doc_content.last_heading:
-                        current_text.append(line)
-                
-                # Process remaining text for the current page
-                if doc_content.last_heading and current_text:
-                    section_text = ' '.join(current_text)
-                    for chunk in process_text_chunk(section_text):
-                        doc_content.sections[doc_content.last_heading].append({
+        page_marker_pattern = re.compile(r'Page\s+(\d+)')
+        current_text = ""
+        
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            
+            page_match = page_marker_pattern.search(text)
+            if page_match:
+                doc_content.current_page = int(page_match.group(1))
+                continue
+            
+            if is_heading(paragraph):
+                # Process previous section
+                if current_text and doc_content.current_section:
+                    chunks = process_text_chunk(current_text)
+                    for chunk in chunks:
+                        doc_content.sections[doc_content.current_section].append({
                             'text': chunk,
                             'page': doc_content.current_page
                         })
-                    doc_content.section_text[doc_content.last_heading] = section_text
-
-        # Create optimized content list
+                    doc_content.section_text[doc_content.current_section] = current_text
+                
+                doc_content.current_section = text
+                current_text = ""
+                continue
+            
+            if doc_content.current_section:
+                current_text += " " + text
+        
+        # Process final section
+        if current_text and doc_content.current_section:
+            chunks = process_text_chunk(current_text)
+            for chunk in chunks:
+                doc_content.sections[doc_content.current_section].append({
+                    'text': chunk,
+                    'page': doc_content.current_page
+                })
+            doc_content.section_text[doc_content.current_section] = current_text
+        
+        # Create flat content list for vectorization
         for section, chunks in doc_content.sections.items():
             for chunk in chunks:
                 doc_content.content.append({
@@ -208,97 +147,46 @@ def load_pdf_content():
                     'page': chunk['page']
                 })
         
-        # Initialize TF-IDF with enhanced Arabic-specific settings
-        if doc_content.content:
-            logger.debug("====== TF-IDF Initialization ======")
-            logger.debug(f"Total content chunks: {len(doc_content.content)}")
-            
-            # Define Arabic stop words
-            arabic_stop_words = set([
-                'في', 'من', 'على', 'الى', 'إلى', 'عن', 'مع', 'هذا', 'هذه', 'هو', 'هي',
-                'او', 'أو', 'ان', 'أن', 'لا', 'ما', 'و', 'ثم', 'لكن', 'بعد', 'قبل',
-                'كل', 'عند', 'خلال', 'حتى', 'بين', 'كان', 'كانت', 'هم', 'لقد', 'حيث'
-            ])
-            
-            # Enhanced vectorizer for Arabic
-            doc_content.vectorizer = TfidfVectorizer(
-                max_features=5000,
-                ngram_range=(1, 3),
-                analyzer='word',
-                token_pattern=r'[\u0600-\u06FF]+',  # Strictly Arabic pattern
-                stop_words=arabic_stop_words,
-                lowercase=False,
-                strip_accents=None,
-                min_df=1,
-                max_df=0.95
-            )
-            texts = [item['text'] for item in doc_content.content]
-            doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
-            
-            logger.info(f"PDF document processed successfully with {len(doc_content.content)} chunks")
-            return doc_content
-            
+        # Initialize TF-IDF
+        doc_content.vectorizer = TfidfVectorizer(
+            max_features=5000,
+            ngram_range=(1, 2)
+        )
+        texts = [item['text'] for item in doc_content.content]
+        doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
+        
+        logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
+        return doc_content
+    
     except Exception as e:
-        logger.error(f"Error processing PDF document: {str(e)}", exc_info=True)
+        logger.error(f"Error processing document: {str(e)}", exc_info=True)
         return None
 
 # Initialize document processor
-DOC_PROCESSOR = load_pdf_content()
+DOC_PROCESSOR = load_docx_content()
 
 def find_relevant_content(question, top_k=3):
-    """Find relevant content using TF-IDF similarity with improved Arabic handling"""
+    """Find relevant content using TF-IDF similarity"""
     try:
-        logger.debug("====== Content Search Process ======")
-        logger.debug(f"Searching for: {question}")
-        
         if not DOC_PROCESSOR:
-            logger.error("DOC_PROCESSOR is not initialized")
-            return []
-            
-        logger.debug(f"Total available content chunks: {len(DOC_PROCESSOR.content)}")
-        logger.debug(f"Available sections: {list(DOC_PROCESSOR.sections.keys())}")
-        
-        # Clean and normalize the question
-        clean_question = clean_arabic_text(question)
-        
-        # Log the cleaned question for debugging
-        logger.debug(f"Cleaned question: {clean_question}")
-        
-        # Transform question to vector
-        try:
-            question_vector = DOC_PROCESSOR.vectorizer.transform([clean_question])
-            logger.debug("Question vectorization successful")
-            logger.debug(f"Question vector shape: {question_vector.shape}")
-            
-            # Get vocabulary for debugging
-            vocab = DOC_PROCESSOR.vectorizer.get_feature_names_out()
-            logger.debug(f"Sample vocabulary terms: {list(vocab[:10])}")
-            
-        except Exception as ve:
-            logger.error(f"Vectorization error: {str(ve)}")
             return []
         
-        # Calculate similarities with improved handling
+        # Transform question
+        question_vector = DOC_PROCESSOR.vectorizer.transform([question])
+        
+        # Calculate similarities
         similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
-        logger.debug(f"Similarity scores range: {np.min(similarities):.4f} to {np.max(similarities):.4f}")
         
-        # Get top k most similar chunks with adjusted threshold
-        threshold = 0.01  # Further lowered threshold for Arabic
+        # Get top k most similar chunks
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         
         relevant_content = []
         seen_sections = set()
         
         for idx in top_indices:
-            similarity = similarities[idx]
-            logger.debug(f"Checking content chunk {idx} with similarity score: {similarity:.4f}")
-            
-            if similarity < threshold:
-                logger.debug(f"Skipping chunk {idx} - below threshold ({threshold})")
-                continue
-                
             content = DOC_PROCESSOR.content[idx]
             if content['section'] not in seen_sections:
+                # Get full section text
                 content['text'] = DOC_PROCESSOR.section_text[content['section']]
                 relevant_content.append(content)
                 seen_sections.add(content['section'])
@@ -318,13 +206,6 @@ def home():
         "document_path": DOCUMENT_PATH
     })
 
-def _build_cors_preflight_response():
-    response = make_response()
-    response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-    return response
-
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
     if request.method == "OPTIONS":
@@ -332,7 +213,7 @@ def ask_question():
     
     try:
         data = request.json
-        question = data.get('question', '').strip()
+        question = data.get('question')
         
         if not question:
             return jsonify({"error": "لم يتم تقديم سؤال"}), 400
@@ -402,9 +283,7 @@ def ask_question():
                         """
                     },
                     {"role": "user", "content": question}
-                ],
-                temperature=0.7,
-                max_tokens=1000
+                ]
             )
             
             response = make_response(jsonify({"answer": completion.choices[0].message.content}))
@@ -424,6 +303,13 @@ def ask_question():
         return jsonify({
             "error": "عذراً، حدث خطأ في معالجة طلبك. الرجاء المحاولة مرة أخرى."
         }), 500
+
+def _build_cors_preflight_response():
+    response = make_response()
+    response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    return response
 
 @app.route('/health', methods=['GET'])
 def health_check():
