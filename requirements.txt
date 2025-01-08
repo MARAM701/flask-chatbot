@@ -2,7 +2,6 @@ flask
 flask-cors
 openai
 gunicorn
-python-docx
+PyPDF2        # Changed from python-docx since we're using PDF now
 scikit-learn
-nltk
 numpy
