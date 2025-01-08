@@ -65,18 +65,25 @@ def is_heading(text):
     return has_number or has_indicator
 
 def clean_arabic_text(text):
-    """Clean and normalize Arabic text"""
+    """Clean and normalize Arabic text with improved handling"""
     if not text:
         return ""
     
-    # Remove extra whitespace
+    # Normalize Arabic characters
+    text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+    text = text.replace('ة', 'ه').replace('ي', 'ى')
+    text = text.replace('ؤ', 'و').replace('ئ', 'ي')
+    
+    # Remove tashkeel (diacritics)
+    tashkeel = ['ّ', 'َ', 'ً', 'ُ', 'ٌ', 'ِ', 'ٍ', 'ْ']
+    for mark in tashkeel:
+        text = text.replace(mark, '')
+    
+    # Remove special characters but keep Arabic punctuation
+    text = ''.join(c for c in text if c.isprintable() or c in ['،', '؛'])
+    
+    # Normalize whitespace
     text = ' '.join(text.split())
-    
-    # Normalize Arabic punctuation
-    text = text.replace('،', ',').replace('؛', ';')
-    
-    # Remove any non-printable characters
-    text = ''.join(char for char in text if char.isprintable())
     
     return text.strip()
 
@@ -206,14 +213,24 @@ def load_pdf_content():
             logger.debug("====== TF-IDF Initialization ======")
             logger.debug(f"Total content chunks: {len(doc_content.content)}")
             
+            # Define Arabic stop words
+            arabic_stop_words = set([
+                'في', 'من', 'على', 'الى', 'إلى', 'عن', 'مع', 'هذا', 'هذه', 'هو', 'هي',
+                'او', 'أو', 'ان', 'أن', 'لا', 'ما', 'و', 'ثم', 'لكن', 'بعد', 'قبل',
+                'كل', 'عند', 'خلال', 'حتى', 'بين', 'كان', 'كانت', 'هم', 'لقد', 'حيث'
+            ])
+            
             # Enhanced vectorizer for Arabic
             doc_content.vectorizer = TfidfVectorizer(
                 max_features=5000,
                 ngram_range=(1, 3),
                 analyzer='word',
-                token_pattern=r'[\u0600-\u06FF\w\s]+',  # Better Arabic pattern
-                lowercase=False,  # Important for Arabic
-                strip_accents=None
+                token_pattern=r'[\u0600-\u06FF]+',  # Strictly Arabic pattern
+                stop_words=arabic_stop_words,
+                lowercase=False,
+                strip_accents=None,
+                min_df=1,
+                max_df=0.95
             )
             texts = [item['text'] for item in doc_content.content]
             doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
@@ -229,7 +246,7 @@ def load_pdf_content():
 DOC_PROCESSOR = load_pdf_content()
 
 def find_relevant_content(question, top_k=3):
-    """Find relevant content using TF-IDF similarity"""
+    """Find relevant content using TF-IDF similarity with improved Arabic handling"""
     try:
         logger.debug("====== Content Search Process ======")
         logger.debug(f"Searching for: {question}")
@@ -243,14 +260,30 @@ def find_relevant_content(question, top_k=3):
         
         # Clean and normalize the question
         clean_question = clean_arabic_text(question)
-        question_vector = DOC_PROCESSOR.vectorizer.transform([clean_question])
         
-        # Calculate similarities
+        # Log the cleaned question for debugging
+        logger.debug(f"Cleaned question: {clean_question}")
+        
+        # Transform question to vector
+        try:
+            question_vector = DOC_PROCESSOR.vectorizer.transform([clean_question])
+            logger.debug("Question vectorization successful")
+            logger.debug(f"Question vector shape: {question_vector.shape}")
+            
+            # Get vocabulary for debugging
+            vocab = DOC_PROCESSOR.vectorizer.get_feature_names_out()
+            logger.debug(f"Sample vocabulary terms: {list(vocab[:10])}")
+            
+        except Exception as ve:
+            logger.error(f"Vectorization error: {str(ve)}")
+            return []
+        
+        # Calculate similarities with improved handling
         similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
         logger.debug(f"Similarity scores range: {np.min(similarities):.4f} to {np.max(similarities):.4f}")
         
-        # Get top k most similar chunks
-        threshold = 0.05  # Lowered threshold for Arabic
+        # Get top k most similar chunks with adjusted threshold
+        threshold = 0.01  # Further lowered threshold for Arabic
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         
         relevant_content = []
