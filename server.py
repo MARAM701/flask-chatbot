@@ -3,7 +3,7 @@ from flask_cors import CORS
 import openai
 import logging
 import os
-from docx import Document
+import PyPDF2
 import re
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
+DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.pdf')
 
 app = Flask(__name__)
 CORS(app, 
@@ -43,17 +43,13 @@ class DocumentContent:
         self.vectors = None
         self.section_text = defaultdict(str)
 
-def is_heading(paragraph):
-    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
-        return True
-    
-    if paragraph.runs and paragraph.runs[0].bold:
-        return True
-        
+def is_heading(text):
+    if len(text.split()) <= 7:
+        heading_indicators = ['باب', 'فصل', 'قسم', 'العنوان', 'عنوان']
+        return any(indicator in text for indicator in heading_indicators)
     return False
 
 def process_text_chunk(text, max_length=1000):
-    """Split text into chunks if too long"""
     if len(text) <= max_length:
         return [text]
     
@@ -76,57 +72,63 @@ def process_text_chunk(text, max_length=1000):
     
     return chunks
 
-def load_docx_content():
+def load_pdf_content():
     try:
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
         
-        # Find the docx file ignoring leading/trailing whitespace
+        # Find the PDF file
         files = os.listdir(current_dir)
-        docx_file = next((f for f in files if f.strip() == 'arabic_file.docx'), None)
-        if not docx_file:
-            docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
+        pdf_file = next((f for f in files if f.strip() == 'arabic_file.pdf'), None)
         
-        if not docx_file:
-            logger.error("Document not found")
+        if not pdf_file:
+            logger.error("PDF document not found")
             return None
             
-        doc_path = os.path.join(current_dir, docx_file)
-        logger.info(f"Loading document from: {doc_path}")
+        doc_path = os.path.join(current_dir, pdf_file)
+        logger.info(f"Loading PDF document from: {doc_path}")
         
-        doc = Document(doc_path)
         doc_content = DocumentContent()
-        
-        page_marker_pattern = re.compile(r'Page\s+(\d+)')
         current_text = ""
         
-        for paragraph in doc.paragraphs:
-            text = paragraph.text.strip()
-            if not text:
-                continue
+        # Open PDF with PyPDF2
+        with open(doc_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
             
-            page_match = page_marker_pattern.search(text)
-            if page_match:
-                doc_content.current_page = int(page_match.group(1))
-                continue
-            
-            if is_heading(paragraph):
-                # Process previous section
-                if current_text and doc_content.current_section:
-                    chunks = process_text_chunk(current_text)
-                    for chunk in chunks:
-                        doc_content.sections[doc_content.current_section].append({
-                            'text': chunk,
-                            'page': doc_content.current_page
-                        })
-                    doc_content.section_text[doc_content.current_section] = current_text
+            for page_num in range(len(pdf_reader.pages)):
+                doc_content.current_page = page_num + 1
                 
-                doc_content.current_section = text
-                current_text = ""
-                continue
-            
-            if doc_content.current_section:
-                current_text += " " + text
+                # Extract text from the page
+                page = pdf_reader.pages[page_num]
+                text = page.extract_text()
+                
+                if not text:
+                    continue
+                
+                # Split text into lines and process
+                lines = text.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    if is_heading(line):
+                        # Process previous section
+                        if current_text and doc_content.current_section:
+                            chunks = process_text_chunk(current_text)
+                            for chunk in chunks:
+                                doc_content.sections[doc_content.current_section].append({
+                                    'text': chunk,
+                                    'page': doc_content.current_page
+                                })
+                            doc_content.section_text[doc_content.current_section] = current_text
+                        
+                        doc_content.current_section = line
+                        current_text = ""
+                        continue
+                    
+                    if doc_content.current_section:
+                        current_text += " " + line
         
         # Process final section
         if current_text and doc_content.current_section:
@@ -155,29 +157,23 @@ def load_docx_content():
         texts = [item['text'] for item in doc_content.content]
         doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
         
-        logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
+        logger.info(f"PDF document processed successfully with {len(doc_content.content)} chunks")
         return doc_content
     
     except Exception as e:
-        logger.error(f"Error processing document: {str(e)}", exc_info=True)
+        logger.error(f"Error processing PDF document: {str(e)}", exc_info=True)
         return None
 
 # Initialize document processor
-DOC_PROCESSOR = load_docx_content()
+DOC_PROCESSOR = load_pdf_content()
 
 def find_relevant_content(question, top_k=3):
-    """Find relevant content using TF-IDF similarity"""
     try:
         if not DOC_PROCESSOR:
             return []
         
-        # Transform question
         question_vector = DOC_PROCESSOR.vectorizer.transform([question])
-        
-        # Calculate similarities
         similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
-        
-        # Get top k most similar chunks
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         
         relevant_content = []
@@ -186,7 +182,6 @@ def find_relevant_content(question, top_k=3):
         for idx in top_indices:
             content = DOC_PROCESSOR.content[idx]
             if content['section'] not in seen_sections:
-                # Get full section text
                 content['text'] = DOC_PROCESSOR.section_text[content['section']]
                 relevant_content.append(content)
                 seen_sections.add(content['section'])
@@ -204,7 +199,13 @@ def home():
         "status": "Server is running",
         "document_status": doc_status,
         "document_path": DOCUMENT_PATH
-    })
+    }) 
+def _build_cors_preflight_response():
+    response = make_response()
+    response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    return response
 
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
@@ -303,13 +304,6 @@ def ask_question():
         return jsonify({
             "error": "عذراً، حدث خطأ في معالجة طلبك. الرجاء المحاولة مرة أخرى."
         }), 500
-
-def _build_cors_preflight_response():
-    response = make_response()
-    response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-    return response
 
 @app.route('/health', methods=['GET'])
 def health_check():
