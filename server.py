@@ -123,10 +123,17 @@ def load_pdf_content():
     """Load PDF content using pdfplumber"""
     try:
         current_dir = os.getcwd()
-        logger.info(f"Current working directory: {current_dir}")
+        logger.debug("====== Starting PDF Loading Process ======")
+        logger.debug(f"Current working directory: {current_dir}")
         
         files = os.listdir(current_dir)
+        logger.debug(f"Files in directory: {files}")
         pdf_file = next((f for f in files if f.strip() == 'arabic_file.pdf'), None)
+        
+        if pdf_file:
+            logger.debug(f"Found PDF file: {pdf_file}")
+        else:
+            logger.error("PDF file 'arabic_file.pdf' not found in directory")
         
         if not pdf_file:
             logger.error("PDF document not found")
@@ -144,7 +151,12 @@ def load_pdf_content():
                 # Extract text with better handling of Arabic
                 text = page.extract_text(x_tolerance=3, y_tolerance=3)
                 if not text:
+                    logger.debug(f"No text extracted from page {page_num}")
                     continue
+                    
+                logger.debug(f"====== Page {page_num} Content Sample ======")
+                logger.debug(f"First 200 characters: {text[:200]}")
+                logger.debug(f"Text length: {len(text)} characters")
                     
                 # Process text line by line
                 lines = text.split('\n')
@@ -189,13 +201,19 @@ def load_pdf_content():
                     'page': chunk['page']
                 })
         
-        # Initialize TF-IDF with Arabic-specific settings
+        # Initialize TF-IDF with enhanced Arabic-specific settings
         if doc_content.content:
+            logger.debug("====== TF-IDF Initialization ======")
+            logger.debug(f"Total content chunks: {len(doc_content.content)}")
+            
+            # Enhanced vectorizer for Arabic
             doc_content.vectorizer = TfidfVectorizer(
                 max_features=5000,
                 ngram_range=(1, 3),
                 analyzer='word',
-                token_pattern=r'(?u)\b\w\w+\b'
+                token_pattern=r'[\u0600-\u06FF\w\s]+',  # Better Arabic pattern
+                lowercase=False,  # Important for Arabic
+                strip_accents=None
             )
             texts = [item['text'] for item in doc_content.content]
             doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
@@ -213,8 +231,15 @@ DOC_PROCESSOR = load_pdf_content()
 def find_relevant_content(question, top_k=3):
     """Find relevant content using TF-IDF similarity"""
     try:
+        logger.debug("====== Content Search Process ======")
+        logger.debug(f"Searching for: {question}")
+        
         if not DOC_PROCESSOR:
+            logger.error("DOC_PROCESSOR is not initialized")
             return []
+            
+        logger.debug(f"Total available content chunks: {len(DOC_PROCESSOR.content)}")
+        logger.debug(f"Available sections: {list(DOC_PROCESSOR.sections.keys())}")
         
         # Clean and normalize the question
         clean_question = clean_arabic_text(question)
@@ -222,16 +247,21 @@ def find_relevant_content(question, top_k=3):
         
         # Calculate similarities
         similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
+        logger.debug(f"Similarity scores range: {np.min(similarities):.4f} to {np.max(similarities):.4f}")
         
         # Get top k most similar chunks
-        threshold = 0.1
+        threshold = 0.05  # Lowered threshold for Arabic
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         
         relevant_content = []
         seen_sections = set()
         
         for idx in top_indices:
-            if similarities[idx] < threshold:
+            similarity = similarities[idx]
+            logger.debug(f"Checking content chunk {idx} with similarity score: {similarity:.4f}")
+            
+            if similarity < threshold:
+                logger.debug(f"Skipping chunk {idx} - below threshold ({threshold})")
                 continue
                 
             content = DOC_PROCESSOR.content[idx]
