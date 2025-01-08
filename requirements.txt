@@ -2,7 +2,3 @@ flask
 flask-cors
 openai
 gunicorn
-python-docx
-scikit-learn
-nltk
-numpy
