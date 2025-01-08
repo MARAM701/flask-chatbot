@@ -3,12 +3,6 @@ from flask_cors import CORS
 import openai
 import logging
 import os
-from docx import Document
-import re
-from pathlib import Path
-from sklearn.feature_extraction.text import TfidfVectorizer
-import numpy as np
-from collections import defaultdict
 
 # Set up logging
 logging.basicConfig(
@@ -16,8 +10,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('server')
-
-DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 
 app = Flask(__name__)
 CORS(app, 
@@ -31,179 +23,17 @@ CORS(app,
         }
     })
 
+# Initialize OpenAI client with API key
 client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-class DocumentContent:
-    def __init__(self):
-        self.sections = defaultdict(list)
-        self.current_section = None
-        self.current_page = 1
-        self.content = []
-        self.vectorizer = None
-        self.vectors = None
-        self.section_text = defaultdict(str)
-
-def is_heading(paragraph):
-    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
-        return True
-    
-    if paragraph.runs and paragraph.runs[0].bold:
-        return True
-        
-    return False
-
-def process_text_chunk(text, max_length=1000):
-    """Split text into chunks if too long"""
-    if len(text) <= max_length:
-        return [text]
-    
-    sentences = text.split('.')
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for sentence in sentences:
-        sentence = sentence.strip() + '.'
-        if current_length + len(sentence) > max_length and current_chunk:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = []
-            current_length = 0
-        current_chunk.append(sentence)
-        current_length += len(sentence)
-    
-    if current_chunk:
-        chunks.append(' '.join(current_chunk))
-    
-    return chunks
-
-def load_docx_content():
-    try:
-        current_dir = os.getcwd()
-        logger.info(f"Current working directory: {current_dir}")
-        
-        # Find the docx file ignoring leading/trailing whitespace
-        files = os.listdir(current_dir)
-        docx_file = next((f for f in files if f.strip() == 'arabic_file.docx'), None)
-        if not docx_file:
-            docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
-        
-        if not docx_file:
-            logger.error("Document not found")
-            return None
-            
-        doc_path = os.path.join(current_dir, docx_file)
-        logger.info(f"Loading document from: {doc_path}")
-        
-        doc = Document(doc_path)
-        doc_content = DocumentContent()
-        
-        page_marker_pattern = re.compile(r'Page\s+(\d+)')
-        current_text = ""
-        
-        for paragraph in doc.paragraphs:
-            text = paragraph.text.strip()
-            if not text:
-                continue
-            
-            page_match = page_marker_pattern.search(text)
-            if page_match:
-                doc_content.current_page = int(page_match.group(1))
-                continue
-            
-            if is_heading(paragraph):
-                # Process previous section
-                if current_text and doc_content.current_section:
-                    chunks = process_text_chunk(current_text)
-                    for chunk in chunks:
-                        doc_content.sections[doc_content.current_section].append({
-                            'text': chunk,
-                            'page': doc_content.current_page
-                        })
-                    doc_content.section_text[doc_content.current_section] = current_text
-                
-                doc_content.current_section = text
-                current_text = ""
-                continue
-            
-            if doc_content.current_section:
-                current_text += " " + text
-        
-        # Process final section
-        if current_text and doc_content.current_section:
-            chunks = process_text_chunk(current_text)
-            for chunk in chunks:
-                doc_content.sections[doc_content.current_section].append({
-                    'text': chunk,
-                    'page': doc_content.current_page
-                })
-            doc_content.section_text[doc_content.current_section] = current_text
-        
-        # Create flat content list for vectorization
-        for section, chunks in doc_content.sections.items():
-            for chunk in chunks:
-                doc_content.content.append({
-                    'text': chunk['text'],
-                    'section': section,
-                    'page': chunk['page']
-                })
-        
-        # Initialize TF-IDF
-        doc_content.vectorizer = TfidfVectorizer(
-            max_features=5000,
-            ngram_range=(1, 2)
-        )
-        texts = [item['text'] for item in doc_content.content]
-        doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
-        
-        logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
-        return doc_content
-    
-    except Exception as e:
-        logger.error(f"Error processing document: {str(e)}", exc_info=True)
-        return None
-
-# Initialize document processor
-DOC_PROCESSOR = load_docx_content()
-
-def find_relevant_content(question, top_k=3):
-    """Find relevant content using TF-IDF similarity"""
-    try:
-        if not DOC_PROCESSOR:
-            return []
-        
-        # Transform question
-        question_vector = DOC_PROCESSOR.vectorizer.transform([question])
-        
-        # Calculate similarities
-        similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
-        
-        # Get top k most similar chunks
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
-        relevant_content = []
-        seen_sections = set()
-        
-        for idx in top_indices:
-            content = DOC_PROCESSOR.content[idx]
-            if content['section'] not in seen_sections:
-                # Get full section text
-                content['text'] = DOC_PROCESSOR.section_text[content['section']]
-                relevant_content.append(content)
-                seen_sections.add(content['section'])
-        
-        return relevant_content
-    
-    except Exception as e:
-        logger.error(f"Error in search: {str(e)}")
-        return []
+# File ID for the uploaded document
+FILE_ID = "file-49QLKcNUKVux98EDPQ4wQc"
 
 @app.route('/')
 def home():
-    doc_status = "Document loaded successfully" if DOC_PROCESSOR else "Document not loaded"
     return jsonify({
         "status": "Server is running",
-        "document_status": doc_status,
-        "document_path": DOCUMENT_PATH
+        "file_id": FILE_ID
     })
 
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
@@ -220,32 +50,13 @@ def ask_question():
             
         logger.info(f"Received question: {question}")
         
-        if not DOC_PROCESSOR:
-            return jsonify({
-                "error": "عذراً، لم يتم تحميل الوثيقة بشكل صحيح. الرجاء التحقق من وجود الملف."
-            }), 500
-        
-        relevant_content = find_relevant_content(question)
-        
-        if not relevant_content:
-            return jsonify({
-                "answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."
-            })
-
-        context = "\n\n".join([
-            f"{item['text']}\n📖 المصدر: {item['section']} - صفحة {item['page']}"
-            for item in relevant_content
-        ])      
-
         try:
             completion = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {
                         "role": "system", 
-                        "content": f"""أنت مساعد ذكي متخصص في الإجابة على الأسئلة المتعلقة بتقرير مدينة الملك عبدالعزيز للعلوم والتقنية لعام 2023. استخدم المعلومات التالية للإجابة على الأسئلة:
-
-                        {context}
+                        "content": """أنت مساعد ذكي متخصص في الإجابة على الأسئلة المتعلقة بتقرير مدينة الملك عبدالعزيز للعلوم والتقنية.
 
                         قواعد مهمة:
                         1. اعتمد فقط على المعلومات الموجودة في ملف التقرير دون إضافة أو افتراض أي تفاصيل غير موجودة.
@@ -279,18 +90,28 @@ def ask_question():
                             اربط كل نقطة بمصدرها عبر رقم المرجع (¹، ²) في نهاية السطر.
                             
                         8. رفض الطلبات التي لا تلتزم بالقواعد أعلاه:
-                            - إذا طلب المستخدم تجاوز أي من القواعد (مثل تقديم رأي أو صياغة مبتكرة)، أجب: "عذرًا، لا يمكنني القيام بذلك بناءً على القواعد المحددة."
-                        """
+                            - إذا طلب المستخدم تجاوز أي من القواعد (مثل تقديم رأي أو صياغة مبتكرة)، أجب: "عذرًا، لا يمكنني القيام بذلك بناءً على القواعد المحددة."""
                     },
                     {"role": "user", "content": question}
-                ]
+                ],
+                file_ids=[FILE_ID]
             )
             
-            response = make_response(jsonify({"answer": completion.choices[0].message.content}))
+            response = make_response(jsonify({
+                "answer": completion.choices[0].message.content,
+                "file_id": FILE_ID
+            }))
             response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
             response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
             return response
+            
+        except openai.APIError as api_error:
+            logger.error(f"OpenAI API error: {str(api_error)}", exc_info=True)
+            error_message = "عذراً، حدث خطأ في الوصول إلى الوثيقة. الرجاء التحقق من صلاحية الملف."
+            if "file not found" in str(api_error).lower():
+                error_message = "عذراً، الملف المطلوب غير موجود. الرجاء التحقق من معرف الملف."
+            return jsonify({"error": error_message}), 500
             
         except Exception as openai_error:
             logger.error(f"OpenAI API error: {str(openai_error)}", exc_info=True)
@@ -313,10 +134,17 @@ def _build_cors_preflight_response():
 
 @app.route('/health', methods=['GET'])
 def health_check():
+    try:
+        # Verify file exists by attempting to retrieve it
+        client.files.retrieve(FILE_ID)
+        file_status = True
+    except:
+        file_status = False
+    
     return jsonify({
         "status": "healthy",
-        "document_loaded": bool(DOC_PROCESSOR),
-        "document_path": DOCUMENT_PATH
+        "file_status": file_status,
+        "file_id": FILE_ID
     }), 200
 
 if __name__ == '__main__':
