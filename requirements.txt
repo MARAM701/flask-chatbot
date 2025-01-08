@@ -2,6 +2,6 @@ flask
 flask-cors
 openai
 gunicorn
-PyPDF2        
+pdfplumber       
 scikit-learn
 numpy
