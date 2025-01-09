@@ -6,4 +6,4 @@ python-docx
 faiss-cpu
 numpy
 python-dotenv
-pickle
+
