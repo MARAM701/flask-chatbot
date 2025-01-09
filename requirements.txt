@@ -2,3 +2,8 @@ flask
 flask-cors
 openai
 gunicorn
+python-docx
+faiss-cpu
+numpy
+python-dotenv
+pickle5
