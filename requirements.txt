@@ -6,4 +6,5 @@ python-docx
 faiss-cpu
 numpy
 python-dotenv
-
+transformers
+torch
