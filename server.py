@@ -67,22 +67,41 @@ def is_heading(paragraph):
         
     return False
 
-def process_text_chunk(text, max_length=1000):
-    """Split text into chunks if too long"""
+def process_text_chunk(text, max_length=500):  # Reduced chunk size for better context
+    """Split text into smaller chunks with improved boundary handling"""
     if len(text) <= max_length:
         return [text]
     
-    sentences = text.split('.')
+    # Split by sentences with improved Arabic punctuation handling
+    sentence_endings = '[.!?।؟۔]+'
+    sentences = re.split(f'({sentence_endings})', text)
+    
     chunks = []
     current_chunk = []
     current_length = 0
     
-    for sentence in sentences:
-        sentence = sentence.strip() + '.'
+    # Process sentences while preserving punctuation
+    i = 0
+    while i < len(sentences):
+        sentence = sentences[i].strip()
+        
+        # Skip empty sentences
+        if not sentence:
+            i += 2  # Skip the punctuation as well
+            continue
+        
+        # Add punctuation back if it exists
+        if i + 1 < len(sentences) and re.match(sentence_endings, sentences[i + 1]):
+            sentence += sentences[i + 1]
+            i += 2
+        else:
+            i += 1
+        
         if current_length + len(sentence) > max_length and current_chunk:
             chunks.append(' '.join(current_chunk))
             current_chunk = []
             current_length = 0
+        
         current_chunk.append(sentence)
         current_length += len(sentence)
     
@@ -96,7 +115,6 @@ def load_docx_content():
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
         
-        # Find the docx file ignoring leading/trailing whitespace
         files = os.listdir(current_dir)
         docx_file = next((f for f in files if f.strip() == 'arabic_file.docx'), None)
         if not docx_file:
@@ -112,7 +130,7 @@ def load_docx_content():
         doc = Document(doc_path)
         doc_content = DocumentContent()
         
-        page_marker_pattern = re.compile(r'Page\s+(\d+)')
+        page_marker_pattern = re.compile(r'Page\s+(\d+)|صفحة\s+(\d+)')
         current_text = ""
         
         for paragraph in doc.paragraphs:
@@ -122,7 +140,7 @@ def load_docx_content():
             
             page_match = page_marker_pattern.search(text)
             if page_match:
-                doc_content.current_page = int(page_match.group(1))
+                doc_content.current_page = int(page_match.group(1) or page_match.group(2))
                 continue
             
             if is_heading(paragraph):
@@ -174,17 +192,21 @@ def load_docx_content():
                     if embedding:
                         embeddings_list.append(embedding)
             
-            # Create FAISS index
-            dimension = len(embeddings_list[0])
-            doc_content.index = faiss.IndexFlatL2(dimension)
-            embeddings_array = np.array(embeddings_list, dtype=np.float32)
-            doc_content.index.add(embeddings_array)
-            
-            # Save embeddings and index
-            with open(EMBEDDINGS_PATH, 'wb') as f:
-                pickle.dump(doc_content.content, f)
-            faiss.write_index(doc_content.index, INDEX_PATH)
-            logger.info("Created and saved new embeddings and FAISS index")
+            if embeddings_list:
+                # Create FAISS index
+                dimension = len(embeddings_list[0])
+                doc_content.index = faiss.IndexFlatL2(dimension)
+                embeddings_array = np.array(embeddings_list, dtype=np.float32)
+                doc_content.index.add(embeddings_array)
+                
+                # Save embeddings and index
+                with open(EMBEDDINGS_PATH, 'wb') as f:
+                    pickle.dump(doc_content.content, f)
+                faiss.write_index(doc_content.index, INDEX_PATH)
+                logger.info("Created and saved new embeddings and FAISS index")
+            else:
+                logger.error("No embeddings generated")
+                return None
         
         logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
         return doc_content
@@ -197,7 +219,7 @@ def load_docx_content():
 DOC_PROCESSOR = load_docx_content()
 
 def find_relevant_content(question, top_k=3):
-    """Find relevant content using FAISS similarity search"""
+    """Find relevant content using FAISS similarity search with improved context handling"""
     try:
         if not DOC_PROCESSOR:
             return []
@@ -207,22 +229,56 @@ def find_relevant_content(question, top_k=3):
         if not question_embedding:
             return []
         
-        # Search similar content
+        # Search similar content - get more candidates
         question_vector = np.array([question_embedding], dtype=np.float32)
-        distances, indices = DOC_PROCESSOR.index.search(question_vector, top_k)
+        k_candidates = min(top_k * 3, len(DOC_PROCESSOR.content))
+        distances, indices = DOC_PROCESSOR.index.search(question_vector, k_candidates)
         
-        relevant_content = []
+        # Normalize distances to relevance scores
+        max_dist = np.max(distances[0]) if len(distances[0]) > 0 else 1
+        min_dist = np.min(distances[0]) if len(distances[0]) > 0 else 0
+        dist_range = max_dist - min_dist
+        
+        if dist_range > 0:
+            relevance_scores = 1 - ((distances[0] - min_dist) / dist_range)
+        else:
+            relevance_scores = np.ones_like(distances[0])
+        
+        relevant_chunks = []
         seen_sections = set()
+        seen_text = set()
         
-        for idx in indices[0]:
+        for idx, score in zip(indices[0], relevance_scores):
+            if score < 0.5:  # Skip low relevance content
+                continue
+                
             content = DOC_PROCESSOR.content[idx]
-            if content['section'] not in seen_sections:
-                # Get full section text
-                content['text'] = DOC_PROCESSOR.section_text[content['section']]
-                relevant_content.append(content)
-                seen_sections.add(content['section'])
+            section = content['section']
+            
+            if section in seen_sections:
+                continue
+            
+            # Get section text but limit size
+            section_text = DOC_PROCESSOR.section_text[section]
+            if len(section_text) > 2000:  # Limit large sections
+                section_text = content['text']
+            
+            # Add to results
+            relevant_chunks.append({
+                'text': section_text,
+                'section': section,
+                'page': content['page'],
+                'relevance': score
+            })
+            seen_sections.add(section)
+            seen_text.add(content['text'])
+            
+            if len(relevant_chunks) >= top_k:
+                break
         
-        return relevant_content
+        # Sort by relevance
+        relevant_chunks.sort(key=lambda x: x['relevance'], reverse=True)
+        return relevant_chunks
     
     except Exception as e:
         logger.error(f"Error in search: {str(e)}")
@@ -271,6 +327,7 @@ def ask_question():
         try:
             completion = client.chat.completions.create(
                 model="gpt-3.5-turbo",
+                temperature=0.3,  # Added for more consistent responses
                 messages=[
                     {
                         "role": "system", 
@@ -291,11 +348,8 @@ def ask_question():
 
                         6. **التصريح عند غياب المعلومة:** إذا لم توجد المعلومة، قلها بوضوح.
 
-                        7. اختم كل إجابة بمصدرها باستخدام الصيغة التالية:
-                            📖 المصدر: [اسم القسم] - صفحة [رقم الصفحة].  
-                            اربط كل نقطة بمصدرها عبر رقم المرجع (¹، ²) في نهاية السطر.
-                            
-                        8. **الرفض عند مخالفة القواعد:** إذا طلب تجاوز القواعد، قل: "عذرًا، لا يمكنني القيام بذلك بناءً على القواعد المحددة."
+                        7. اختم كل إجابة بمصدرها:
+                        📖 المصدر: [اسم القسم] - صفحة [رقم الصفحة]
                         """
                     },
                     {"role": "user", "content": question}
@@ -332,7 +386,9 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "document_loaded": bool(DOC_PROCESSOR),
-        "document_path": DOCUMENT_PATH
+        "document_path": DOCUMENT_PATH,
+        "chunks_count": len(DOC_PROCESSOR.content) if DOC_PROCESSOR else 0,
+        "sections_count": len(DOC_PROCESSOR.sections) if DOC_PROCESSOR else 0
     }), 200
 
 if __name__ == '__main__':
