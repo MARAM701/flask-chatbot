@@ -25,7 +25,7 @@ EMBEDDINGS_PATH = 'embeddings.pkl'
 INDEX_PATH = 'faiss_index.bin'
 
 # Initialize Hugging Face extractive QA pipeline
-qa_pipeline = pipeline("question-answering", model="timpal0l/mdeberta-v3-base-squad2")
+qa_pipeline = pipeline("question-answering", model="ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA")
 
 
 app = Flask(__name__)
