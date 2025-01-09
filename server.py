@@ -11,7 +11,8 @@ from collections import defaultdict
 import faiss
 import pickle
 import torch
-from transformers import pipeline, AutoModelForQuestionAnswering, AutoTokenizer
+from transformers import convert_graph_to_onnx, AutoTokenizer
+import onnxruntime as ort
 import datetime
 
 logging.basicConfig(
@@ -23,22 +24,23 @@ logger = logging.getLogger('server')
 DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 EMBEDDINGS_PATH = 'embeddings.pkl'
 INDEX_PATH = 'faiss_index.bin'
+MODEL_PATH = 'qa_model.onnx'
 
-# Optimized model loading
-model = AutoModelForQuestionAnswering.from_pretrained(
-    "ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA",
-    torch_dtype=torch.float16,
-    low_cpu_mem_usage=True,
-    device_map="cpu"  # Force CPU usage
-)
+# Convert model to ONNX if not exists
+if not os.path.exists(MODEL_PATH):
+    from transformers import AutoModelForQuestionAnswering
+    model = AutoModelForQuestionAnswering.from_pretrained("ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA")
+    convert_graph_to_onnx.convert(
+        framework="pt",
+        model=model,
+        output=Path(MODEL_PATH),
+        pipeline_name="question-answering",
+        opset=12
+    )
+
+# Initialize tokenizer and ONNX session
 tokenizer = AutoTokenizer.from_pretrained("ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA")
-
-qa_pipeline = pipeline(
-    "question-answering",
-    model=model,
-    tokenizer=tokenizer,
-    device=-1  # Force CPU
-)
+session = ort.InferenceSession(MODEL_PATH)
 
 app = Flask(__name__)
 CORS(app, 
@@ -66,16 +68,22 @@ class DocumentContent:
 
 def get_extractive_answer(question, context):
     try:
-        # Add length constraints
-        result = qa_pipeline(
-            question=question, 
-            context=context,
-            max_seq_length=384,
-            max_answer_length=50
+        inputs = tokenizer(
+            question, 
+            context, 
+            return_tensors="pt", 
+            max_length=384, 
+            truncation=True
         )
-        return result["answer"]
+        outputs = session.run(None, {
+            "input_ids": inputs["input_ids"].numpy(),
+            "attention_mask": inputs["attention_mask"].numpy()
+        })
+        answer_start = outputs[0].argmax()
+        answer_end = outputs[1].argmax()
+        return tokenizer.decode(inputs["input_ids"][0][answer_start:answer_end+1])
     except Exception as e:
-        logger.error(f"Hugging Face QA error: {e}")
+        logger.error(f"ONNX inference error: {e}")
         return "تعذر استخراج الإجابة"
 
 # Your existing load_docx_content and find_relevant_content functions here...
