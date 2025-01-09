@@ -10,3 +10,4 @@ transformers
 torch 
 onnx
 onnxruntime
+accelerate
