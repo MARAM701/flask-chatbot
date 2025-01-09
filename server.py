@@ -11,10 +11,10 @@ from collections import defaultdict
 import faiss
 import pickle
 
-# Set up logging
+# Set up logging with more detailed format
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
 )
 logger = logging.getLogger('server')
 
@@ -47,56 +47,74 @@ class DocumentContent:
         self.section_text = defaultdict(str)
 
 def get_embedding(text):
-    """Get embedding from OpenAI API"""
+    """Get embedding from OpenAI API with improved error handling"""
     try:
-        response = client.embeddings.create(
-            model="text-embedding-ada-002",
-            input=text
-        )
-        return response.data[0].embedding
+        # Add retry logic for reliability
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.embeddings.create(
+                    model="text-embedding-ada-002",
+                    input=text
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                logger.warning(f"Embedding attempt {attempt + 1} failed, retrying...")
+                continue
     except Exception as e:
         logger.error(f"Error getting embedding: {str(e)}")
         return None
 
 def is_heading(paragraph):
-    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
+    """Improved heading detection for Arabic and English text"""
+    # Check for explicit style names
+    if paragraph.style and any(style in paragraph.style.name.lower() for style in 
+        ['heading', 'title', 'header', 'العنوان', 'عنوان', 'رئيسي', 'فرعي']):
         return True
     
-    if paragraph.runs and paragraph.runs[0].bold:
+    # Check for bold formatting
+    if paragraph.runs and any(run.bold for run in paragraph.runs):
+        return True
+    
+    # Additional checks for Arabic headings
+    text = paragraph.text.strip()
+    if text and (text.startswith('•') or text.startswith('-') or 
+                any(char in text for char in [':', '：', '：', '׃', '：'])):
         return True
         
     return False
 
-def process_text_chunk(text, max_length=500):  # Reduced chunk size for better context
-    """Split text into smaller chunks with improved boundary handling"""
+def process_text_chunk(text, max_length=400):  # Reduced chunk size for better context
+    """Split text into smaller chunks with improved Arabic text handling"""
     if len(text) <= max_length:
         return [text]
     
-    # Split by sentences with improved Arabic punctuation handling
-    sentence_endings = '[.!?।؟۔]+'
+    # Enhanced sentence splitting for Arabic
+    sentence_endings = '[.!?।؟۔؛،]+'
     sentences = re.split(f'({sentence_endings})', text)
     
     chunks = []
     current_chunk = []
     current_length = 0
     
-    # Process sentences while preserving punctuation
     i = 0
     while i < len(sentences):
         sentence = sentences[i].strip()
         
-        # Skip empty sentences
         if not sentence:
-            i += 2  # Skip the punctuation as well
+            i += 2
             continue
         
-        # Add punctuation back if it exists
+        # Preserve sentence endings
         if i + 1 < len(sentences) and re.match(sentence_endings, sentences[i + 1]):
             sentence += sentences[i + 1]
             i += 2
         else:
             i += 1
         
+        # Create new chunk if current one is too large
         if current_length + len(sentence) > max_length and current_chunk:
             chunks.append(' '.join(current_chunk))
             current_chunk = []
@@ -111,6 +129,7 @@ def process_text_chunk(text, max_length=500):  # Reduced chunk size for better c
     return chunks
 
 def load_docx_content():
+    """Load and process document with improved error handling and logging"""
     try:
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
@@ -130,7 +149,8 @@ def load_docx_content():
         doc = Document(doc_path)
         doc_content = DocumentContent()
         
-        page_marker_pattern = re.compile(r'Page\s+(\d+)|صفحة\s+(\d+)')
+        # Improved page marker detection
+        page_marker_pattern = re.compile(r'(?:Page|صفحة|ص)\s*[:-]?\s*(\d+)')
         current_text = ""
         
         for paragraph in doc.paragraphs:
@@ -140,11 +160,10 @@ def load_docx_content():
             
             page_match = page_marker_pattern.search(text)
             if page_match:
-                doc_content.current_page = int(page_match.group(1) or page_match.group(2))
+                doc_content.current_page = int(page_match.group(1))
                 continue
             
             if is_heading(paragraph):
-                # Process previous section
                 if current_text and doc_content.current_section:
                     chunks = process_text_chunk(current_text)
                     for chunk in chunks:
@@ -171,10 +190,9 @@ def load_docx_content():
                 })
             doc_content.section_text[doc_content.current_section] = current_text
         
-        # Create flat content list and generate embeddings
+        # Handle embeddings
         embeddings_list = []
         
-        # Try to load existing embeddings
         if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(INDEX_PATH):
             with open(EMBEDDINGS_PATH, 'rb') as f:
                 doc_content.content = pickle.load(f)
@@ -193,13 +211,11 @@ def load_docx_content():
                         embeddings_list.append(embedding)
             
             if embeddings_list:
-                # Create FAISS index
                 dimension = len(embeddings_list[0])
                 doc_content.index = faiss.IndexFlatL2(dimension)
                 embeddings_array = np.array(embeddings_list, dtype=np.float32)
                 doc_content.index.add(embeddings_array)
                 
-                # Save embeddings and index
                 with open(EMBEDDINGS_PATH, 'wb') as f:
                     pickle.dump(doc_content.content, f)
                 faiss.write_index(doc_content.index, INDEX_PATH)
@@ -218,23 +234,29 @@ def load_docx_content():
 # Initialize document processor
 DOC_PROCESSOR = load_docx_content()
 
-def find_relevant_content(question, top_k=3):
-    """Find relevant content using FAISS similarity search with improved context handling"""
+def find_relevant_content(question, top_k=5):  # Increased from 3 to 5
+    """Find relevant content using improved search and context handling"""
     try:
         if not DOC_PROCESSOR:
             return []
         
-        # Get question embedding
         question_embedding = get_embedding(question)
         if not question_embedding:
             return []
         
-        # Search similar content - get more candidates
+        # Get more candidates for better coverage
         question_vector = np.array([question_embedding], dtype=np.float32)
-        k_candidates = min(top_k * 3, len(DOC_PROCESSOR.content))
+        k_candidates = min(top_k * 4, len(DOC_PROCESSOR.content))
         distances, indices = DOC_PROCESSOR.index.search(question_vector, k_candidates)
         
-        # Normalize distances to relevance scores
+        # Log search results
+        logger.debug(f"\nSearch results for question: {question}")
+        logger.debug("Raw candidates (idx | distance | text snippet):")
+        for idx, dist in zip(indices[0], distances[0]):
+            text_snippet = DOC_PROCESSOR.content[idx]['text'][:100]
+            logger.debug(f"idx={idx}, dist={dist:.4f}, text={text_snippet}...")
+        
+        # Improved scoring
         max_dist = np.max(distances[0]) if len(distances[0]) > 0 else 1
         min_dist = np.min(distances[0]) if len(distances[0]) > 0 else 0
         dist_range = max_dist - min_dist
@@ -245,53 +267,45 @@ def find_relevant_content(question, top_k=3):
             relevance_scores = np.ones_like(distances[0])
         
         relevant_chunks = []
-        seen_sections = set()
-        seen_text = set()
+        section_chunks = defaultdict(list)
         
+        # Group chunks by section
         for idx, score in zip(indices[0], relevance_scores):
-            if score < 0.5:  # Skip low relevance content
+            if score < 0.3:  # Lowered threshold from 0.5
                 continue
                 
             content = DOC_PROCESSOR.content[idx]
             section = content['section']
             
-            if section in seen_sections:
-                continue
-            
-            # Get section text but limit size
-            section_text = DOC_PROCESSOR.section_text[section]
-            if len(section_text) > 2000:  # Limit large sections
-                section_text = content['text']
-            
-            # Add to results
-            relevant_chunks.append({
-                'text': section_text,
-                'section': section,
+            section_chunks[section].append({
+                'text': content['text'],  # Use chunk text instead of section text
                 'page': content['page'],
-                'relevance': score
+                'relevance': score,
+                'section': section
             })
-            seen_sections.add(section)
-            seen_text.add(content['text'])
+        
+        # Select best chunks from each section
+        for section, chunks in section_chunks.items():
+            chunks.sort(key=lambda x: x['relevance'], reverse=True)
+            relevant_chunks.extend(chunks[:2])  # Take up to 2 best chunks per section
             
-            if len(relevant_chunks) >= top_k:
+            if len(relevant_chunks) >= top_k * 2:  # Get more candidates
                 break
         
-        # Sort by relevance
+        # Final sort and limit
         relevant_chunks.sort(key=lambda x: x['relevance'], reverse=True)
+        relevant_chunks = relevant_chunks[:top_k]
+        
+        logger.debug("\nSelected chunks:")
+        for chunk in relevant_chunks:
+            logger.debug(f"Section: {chunk['section']}, Page: {chunk['page']}, Score: {chunk['relevance']:.4f}")
+            logger.debug(f"Text: {chunk['text'][:100]}...")
+        
         return relevant_chunks
     
     except Exception as e:
         logger.error(f"Error in search: {str(e)}")
         return []
-
-@app.route('/')
-def home():
-    doc_status = "Document loaded successfully" if DOC_PROCESSOR else "Document not loaded"
-    return jsonify({
-        "status": "Server is running",
-        "document_status": doc_status,
-        "document_path": DOCUMENT_PATH
-    })
 
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
@@ -300,7 +314,7 @@ def ask_question():
     
     try:
         data = request.json
-        question = data.get('question')
+        question = data.get('question', '').strip()
         
         if not question:
             return jsonify({"error": "لم يتم تقديم سؤال"}), 400
@@ -312,51 +326,69 @@ def ask_question():
                 "error": "عذراً، لم يتم تحميل الوثيقة بشكل صحيح. الرجاء التحقق من وجود الملف."
             }), 500
         
-        relevant_content = find_relevant_content(question)
+        relevant_content = find_relevant_content(question, top_k=5)
         
         if not relevant_content:
             return jsonify({
                 "answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."
             })
 
-        context = "\n\n".join([
-            f"{item['text']}\n📖 المصدر: {item['section']} - صفحة {item['page']}"
-            for item in relevant_content
-        ])      
+        # Enhanced context building
+        context_parts = []
+        for item in relevant_content:
+            context_parts.append(
+                f"النص: {item['text']}\n"
+                f"القسم: {item['section']}\n"
+                f"الصفحة: {item['page']}\n"
+                f"درجة الصلة: {item['relevance']:.2f}\n"
+                "---"
+            )
+        
+        context = "\n".join(context_parts)
+
+        # Enhanced system prompt
+        system_prompt = f"""أنت مساعد ذكي متخصص في الإجابة على الأسئلة المتعلقة بتقرير مدينة الملك عبدالعزيز للعلوم والتقنية. يرجى استخدام المعلومات التالية للإجابة:
+
+{context}
+
+إرشادات مهمة:
+1. ابحث عن المعلومات في كل النصوص المقدمة، حتى لو كانت مصاغة بشكل مختلف.
+2. إذا وجدت المعلومة في أكثر من مكان، قم بدمجها بشكل منطقي.
+3. إذا كانت المعلومة غير واضحة أو غير مباشرة، اشرح ما وجدته وأين يمكن أن تكون المعلومة غير مكتملة.
+4. اذكر دائماً مصدر المعلومة (القسم والصفحة) في نهاية إجابتك.
+5. إذا كنت غير متأكد، قل ذلك بوضوح واذكر السبب.
+
+عند الإجابة:
+- اجمع المعلومات من جميع النصوص ذات الصلة
+- ابدأ بالنقاط الرئيسية ثم التفاصيل
+- اذكر الأرقام والإحصائيات بدقة 
+- اربط المعلومات بشكل منطقي
+- اختم بمصادر المعلومات المستخدمة"""
 
         try:
+            # Use GPT-3.5-turbo-16k for larger context
             completion = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                temperature=0.3,  # Added for more consistent responses
+                model="gpt-3.5-turbo-16k",
+                temperature=0.2,  # Lower temperature for more consistent answers
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": f"""أنت مساعد ذكي متخصص في الإجابة على الأسئلة المتعلقة بتقرير مدينة الملك عبدالعزيز للعلوم والتقنية لعام 2023. استخدم المعلومات التالية للإجابة على الأسئلة:
-
-                        {context}
-
-                        قواعد مهمة:
-                        1.  **اعتمد على النص فقط:** أجب فقط من النص دون افتراضات. إذا غابت المعلومة، قل: "عذرًا، النص لا يحتوي على هذه المعلومة."
-
-                        2. **استخدم العربية الفصحى:** استخدم لغة فصحى واضحة خالية من الأخطاء والعامية.
-                            
-                        3. **تجنب الصياغة الإبداعية:** لا تعيد كتابة النص بأسلوب مختلف، بل قم بتنسيق الإجابة فقط عند الحاجة.
-                            
-                        4. **الإيجاز والتنظيم:** ابدأ بملخص يتضمن الأرقام والنسب المهمة. أضف التفاصيل عند الطلب.
-
-                        5. **الانسجام والترابط:** اجعل الأفكار مترابطة وسهلة الفهم.
-
-                        6. **التصريح عند غياب المعلومة:** إذا لم توجد المعلومة، قلها بوضوح.
-
-                        7. اختم كل إجابة بمصدرها:
-                        📖 المصدر: [اسم القسم] - صفحة [رقم الصفحة]
-                        """
-                    },
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": question}
                 ]
             )
             
-            response = make_response(jsonify({"answer": completion.choices[0].message.content}))
+            answer = completion.choices[0].message.content
+
+            # Add debug information to response
+            response_data = {
+                "answer": answer,
+                "debug_info": {
+                    "chunks_used": len(relevant_content),
+                    "relevance_scores": [f"{chunk['relevance']:.3f}" for chunk in relevant_content],
+                    "sections_used": list(set(chunk['section'] for chunk in relevant_content))
+                }
+            }
+            
+            response = make_response(jsonify(response_data))
             response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
             response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -375,6 +407,7 @@ def ask_question():
         }), 500
 
 def _build_cors_preflight_response():
+    """Build CORS preflight response"""
     response = make_response()
     response.headers.add('Access-Control-Allow-Origin', 'https://superlative-belekoy-1319b4.netlify.app')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
@@ -383,14 +416,54 @@ def _build_cors_preflight_response():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({
-        "status": "healthy",
-        "document_loaded": bool(DOC_PROCESSOR),
-        "document_path": DOCUMENT_PATH,
-        "chunks_count": len(DOC_PROCESSOR.content) if DOC_PROCESSOR else 0,
-        "sections_count": len(DOC_PROCESSOR.sections) if DOC_PROCESSOR else 0
-    }), 200
+    """Enhanced health check endpoint with detailed diagnostics"""
+    try:
+        # Basic health information
+        health_info = {
+            "status": "healthy",
+            "document_loaded": bool(DOC_PROCESSOR),
+            "document_path": DOCUMENT_PATH,
+            "chunks_count": len(DOC_PROCESSOR.content) if DOC_PROCESSOR else 0,
+            "sections_count": len(DOC_PROCESSOR.sections) if DOC_PROCESSOR else 0,
+            "embeddings_file_exists": os.path.exists(EMBEDDINGS_PATH),
+            "index_file_exists": os.path.exists(INDEX_PATH),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        
+        # Add memory usage info if psutil is available
+        try:
+            import psutil
+            process = psutil.Process()
+            health_info["memory_usage_mb"] = process.memory_info().rss / 1024 / 1024
+            health_info["cpu_percent"] = process.cpu_percent()
+        except ImportError:
+            pass
+
+        return jsonify(health_info), 200
+    except Exception as e:
+        logger.error(f"Error in health check: {str(e)}")
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
+
+# Add necessary imports
+import datetime
 
 if __name__ == '__main__':
+    # Configure server
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    debug_mode = os.getenv('DEBUG', 'False').lower() == 'true'
+    
+    # Log startup information
+    logger.info(f"Starting server on port {port}")
+    logger.info(f"Debug mode: {debug_mode}")
+    logger.info(f"Document path: {DOCUMENT_PATH}")
+    
+    # Run the application
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=debug_mode,
+        threaded=True  # Enable threading for better concurrent performance
+    )
