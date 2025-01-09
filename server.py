@@ -10,10 +10,10 @@ import numpy as np
 from collections import defaultdict
 import faiss
 import pickle
-from transformers import pipeline  # Hugging Face pipeline import
+import torch
+from transformers import pipeline, AutoModelForQuestionAnswering, AutoTokenizer
 import datetime
 
-# Set up logging with more detailed format
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
@@ -24,9 +24,21 @@ DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 EMBEDDINGS_PATH = 'embeddings.pkl'
 INDEX_PATH = 'faiss_index.bin'
 
-# Initialize Hugging Face extractive QA pipeline
-qa_pipeline = pipeline("question-answering", model="ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA")
+# Optimized model loading
+model = AutoModelForQuestionAnswering.from_pretrained(
+    "ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA",
+    torch_dtype=torch.float16,
+    low_cpu_mem_usage=True,
+    device_map="cpu"  # Force CPU usage
+)
+tokenizer = AutoTokenizer.from_pretrained("ZeyadAhmed/AraElectra-Arabic-SQuADv2-QA")
 
+qa_pipeline = pipeline(
+    "question-answering",
+    model=model,
+    tokenizer=tokenizer,
+    device=-1  # Force CPU
+)
 
 app = Flask(__name__)
 CORS(app, 
@@ -52,25 +64,21 @@ class DocumentContent:
         self.index = None
         self.section_text = defaultdict(str)
 
-# Function to get Hugging Face extractive answer
 def get_extractive_answer(question, context):
-    """Get short extractive answer from Hugging Face QA model"""
     try:
-        result = qa_pipeline(question=question, context=context)
+        # Add length constraints
+        result = qa_pipeline(
+            question=question, 
+            context=context,
+            max_seq_length=384,
+            max_answer_length=50
+        )
         return result["answer"]
     except Exception as e:
         logger.error(f"Hugging Face QA error: {e}")
         return "تعذر استخراج الإجابة"
 
-def load_docx_content():
-    """Load and process the document (unchanged)"""
-    # Your existing load_docx_content function
-    ...
-
-def find_relevant_content(question, top_k=5):
-    """Find relevant content (unchanged)"""
-    # Your existing FAISS-based search function
-    ...
+# Your existing load_docx_content and find_relevant_content functions here...
 
 DOC_PROCESSOR = load_docx_content()
 
@@ -91,18 +99,13 @@ def ask_question():
         if not DOC_PROCESSOR:
             return jsonify({"error": "عذراً، لم يتم تحميل الوثيقة بشكل صحيح."}), 500
         
-        # Step 1: Retrieve relevant content using FAISS
         relevant_content = find_relevant_content(question, top_k=3)
         if not relevant_content:
             return jsonify({"answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."})
 
-        # Step 2: Build a combined context from retrieved text chunks
         combined_context = "\n\n".join([f"{chunk['text']}" for chunk in relevant_content])
-        
-        # Step 3: Extract factual answer using Hugging Face QA pipeline
         extractive_answer = get_extractive_answer(question, combined_context)
 
-        # Step 4: Pass extractive answer to OpenAI for natural language explanation
         system_prompt = f"""
         أنت مساعد ذكي متخصص في الإجابة عن الأسئلة المتعلقة بالتقرير السنوي.
         استخدم النص المستخرج التالي كإجابة أولية وقدم شرحًا مفصلًا بلغة عربية فصحى:
@@ -149,7 +152,6 @@ def _build_cors_preflight_response():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check to monitor the server"""
     return jsonify({"status": "healthy", "document_loaded": bool(DOC_PROCESSOR)}), 200
 
 if __name__ == '__main__':
