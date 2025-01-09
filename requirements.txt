@@ -7,4 +7,6 @@ faiss-cpu
 numpy
 python-dotenv
 transformers
-torch
+torch 
+onnx
+onnxruntime
