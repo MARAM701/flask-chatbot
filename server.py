@@ -326,7 +326,7 @@ def ask_question():
 
         try:
             completion = client.chat.completions.create(
-                model="gpt-4-32k",
+                model="gpt-3.5-turbo",
                 temperature=0.3,  # Added for more consistent responses
                 messages=[
                     {
