@@ -1,8 +1,9 @@
-flask
+Flask
 flask-cors
-openai
+requests
 gunicorn
 python-docx
-faiss-cpu
 numpy
 python-dotenv
+scikit-learn
+faiss-cpu
