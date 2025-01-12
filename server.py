@@ -8,6 +8,7 @@ import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 from collections import defaultdict
+import gc
 
 # Set up logging
 logging.basicConfig(
@@ -52,63 +53,73 @@ def preprocess_arabic_text(text):
 
 class DocumentContent:
     def __init__(self):
-        self.sections = defaultdict(list)
+        self.sections = {}  # Changed from defaultdict to regular dict
+        self.section_text = {}  # Changed from defaultdict to regular dict
         self.current_section = None
-        self.current_page = 1
-        self.content = []
         self.vectorizer = None
         self.vectors = None
-        self.section_text = defaultdict(str)
-        self.raw_text = defaultdict(str)
+        self.content = []
 
 def is_heading(paragraph):
-    # Check for heading styles including Arabic
-    heading_keywords = ['كلمة', 'مجلس الإدارة', 'تعريف', 'ملخص', 'إنجازات', 'مقدمة', 'برنامج']
-    if paragraph.style and any(style in paragraph.style.name.lower() for style in 
-        ['heading', 'title', 'header', 'العنوان', 'عنوان', 'رئيسي', 'فرعي']):
+    """Improved Arabic heading detection"""
+    text = paragraph.text.strip()
+    if not text:
+        return False
+        
+    # Define Arabic heading keywords
+    heading_keywords = [
+        'كلمة', 'مجلس', 'تعريف', 'ملخص', 'إنجازات', 'مقدمة', 'برنامج',
+        'الأهداف', 'النتائج', 'التوصيات', 'الخطة', 'المشاريع', 'الرؤية',
+        'الرسالة', 'القيم', 'التحديات', 'المبادرات'
+    ]
+    
+    # Check for heading style
+    if paragraph.style and 'heading' in str(paragraph.style.name).lower():
         return True
     
-    if paragraph.runs and paragraph.runs[0].bold:
-        text = paragraph.text.strip()
-        if len(text) < 100 and (
-            any(text.endswith(marker) for marker in [':', '：', '：', '：', '-', '.']) or
-            any(keyword in text for keyword in heading_keywords)
-        ):
+    # Check if runs are bold
+    if paragraph.runs and all(run.bold for run in paragraph.runs):
+        if len(text) > 150:  # Too long to be a heading
+            return False
+            
+        # Check for heading patterns
+        if (any(text.startswith(kw) for kw in heading_keywords) or
+            any(text.endswith(marker) for marker in [':', '؛', '-', '.']) or
+            len(text.split()) <= 7):
             return True
-        return True
+            
     return False
 
-def process_text_chunk(text, max_length=3000):
-    """Split text into chunks with overlap for better context"""
+def process_text_chunk(text, max_length=1500):
+    """Process text into smaller chunks with better Arabic sentence handling"""
     if not text or len(text) <= max_length:
         return [text] if text else []
 
-    sentences = re.split(r'(?<=\.)|(?<=؟)|(?<=!)', text)
+    # Split on Arabic sentence endings
+    sentences = re.split(r'[.!؟]', text)
     chunks = []
     current_chunk = []
     current_length = 0
-    overlap = 500  # Increase overlap for better context
 
     for sentence in sentences:
         sentence = sentence.strip()
-        if current_length + len(sentence) > max_length - overlap and current_chunk:
-            chunk_text = ' '.join(current_chunk)
-            chunks.append(chunk_text)
-            # Keep last few sentences for overlap
-            overlap_text = ' '.join(current_chunk[-3:])
-            current_chunk = [overlap_text]
-            current_length = len(overlap_text)
+        if not sentence:
+            continue
+            
+        sentence_length = len(sentence)
+        
+        if current_length + sentence_length > max_length and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = []
+            current_length = 0
+            
         current_chunk.append(sentence)
-        current_length += len(sentence)
+        current_length += sentence_length
 
     if current_chunk:
         chunks.append(' '.join(current_chunk))
 
     return chunks
-
-def get_token_estimate(text):
-    """Rough token estimate - 4 chars per token"""
-    return len(text) // 4
 
 def load_docx_content():
     try:
@@ -138,14 +149,15 @@ def load_docx_content():
             
             if is_heading(paragraph):
                 if current_text and doc_content.current_section:
-                    chunks = process_text_chunk(current_text)
-                    for chunk in chunks:
-                        doc_content.sections[doc_content.current_section].append({
-                            'text': chunk,
-                            'page': doc_content.current_page
-                        })
-                    doc_content.section_text[doc_content.current_section] = preprocess_arabic_text(current_text)
-                    doc_content.raw_text[doc_content.current_section] = current_text
+                    processed_text = preprocess_arabic_text(current_text)
+                    doc_content.section_text[doc_content.current_section] = processed_text
+                    doc_content.sections[doc_content.current_section] = current_text
+                    
+                    # Add to content list for vectorization
+                    doc_content.content.append({
+                        'text': current_text,
+                        'section': doc_content.current_section
+                    })
                 
                 doc_content.current_section = text
                 current_text = ""
@@ -156,40 +168,41 @@ def load_docx_content():
         
         # Process final section
         if current_text and doc_content.current_section:
-            chunks = process_text_chunk(current_text)
-            for chunk in chunks:
-                doc_content.sections[doc_content.current_section].append({
-                    'text': chunk,
-                    'page': doc_content.current_page
-                })
-            doc_content.section_text[doc_content.current_section] = preprocess_arabic_text(current_text)
-            doc_content.raw_text[doc_content.current_section] = current_text
+            processed_text = preprocess_arabic_text(current_text)
+            doc_content.section_text[doc_content.current_section] = processed_text
+            doc_content.sections[doc_content.current_section] = current_text
+            
+            doc_content.content.append({
+                'text': current_text,
+                'section': doc_content.current_section
+            })
         
-        # Prepare content for vectorization
-        for section, chunks in doc_content.sections.items():
-            for chunk in chunks:
-                doc_content.content.append({
-                    'text': chunk['text'],
-                    'section': section,
-                    'page': chunk['page']
-                })
+        # Log found sections
+        logger.info(f"Found {len(doc_content.sections)} sections:")
+        for section in doc_content.sections.keys():
+            logger.info(f"- {section}")
         
-        # Initialize TF-IDF with section-aware text representation
+        # Initialize vectorizer with Arabic-specific settings
         doc_content.vectorizer = TfidfVectorizer(
-            max_features=5000,
-            ngram_range=(1, 3),
+            max_features=2000,  # Reduced from 5000
+            ngram_range=(1, 2),  # Reduced from (1,3)
             preprocessor=preprocess_arabic_text,
             token_pattern=r'[\u0600-\u06FF\s]+',
         )
-        # Include section headers in vectorization for better context
+        
+        # Prepare texts for vectorization
         texts = []
         for item in doc_content.content:
-            section_text = f"{item['section']} {item['section']} {item['text']}"  # Double section weight
+            # Include section name for context but without doubling
+            section_text = f"{item['section']} {item['text']}"
             texts.append(preprocess_arabic_text(section_text))
             
         doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
         
-        logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
+        # Clean up
+        gc.collect()
+        
+        logger.info(f"Document processed successfully with {len(doc_content.content)} sections")
         return doc_content
     
     except Exception as e:
@@ -198,8 +211,8 @@ def load_docx_content():
 
 DOC_PROCESSOR = load_docx_content()
 
-def find_relevant_content(question, top_k=50):
-    """Find relevant content using enhanced TF-IDF similarity search"""
+def find_relevant_content(question):
+    """Find relevant content using improved similarity search"""
     if not DOC_PROCESSOR:
         return []
     
@@ -215,46 +228,35 @@ def find_relevant_content(question, top_k=50):
     matching_indices = np.where(similarities > min_similarity)[0]
     
     # Group by sections and calculate scores
-    section_groups = defaultdict(list)
     section_scores = defaultdict(float)
+    section_content = {}
     
     for idx in matching_indices:
         score = float(similarities[idx])
-        content = DOC_PROCESSOR.content[idx].copy()
-        content['score'] = score
-        
+        content = DOC_PROCESSOR.content[idx]
         section = content['section']
-        section_groups[section].append(content)
-        section_scores[section] += score
+        
+        # Keep highest scoring content for each section
+        if section not in section_content or score > section_scores[section]:
+            section_content[section] = content['text']
+            section_scores[section] = score
     
-    # Sort sections by total relevance
-    ranked_sections = sorted(section_scores.items(), key=lambda x: x[1], reverse=True)
-    logger.debug("Ranked sections with scores:")
-    for section, score in ranked_sections[:10]:
-        logger.debug(f"Section: {section}, Score: {score}")
-    
-    # Get best content from top sections
+    # Get all relevant sections
     relevant_content = []
-    seen_sections = set()
+    for section, score in sorted(section_scores.items(), key=lambda x: x[1], reverse=True):
+        if score > min_similarity:
+            relevant_content.append({
+                'section': section,
+                'text': section_content[section],
+                'score': score
+            })
     
-    # First, add highest scoring content from each section
-    for section, total_score in ranked_sections:
-        if total_score > min_similarity and section not in seen_sections:
-            # Get best chunk from this section
-            best_chunk = max(section_groups[section], key=lambda x: x['score'])
-            best_chunk['text'] = DOC_PROCESSOR.raw_text[section]
-            relevant_content.append(best_chunk)
-            seen_sections.add(section)
-            
-            if len(relevant_content) >= min(10, len(DOC_PROCESSOR.sections)):
-                break
-    
-    logger.debug(f"Found content in {len(relevant_content)} sections")
+    logger.debug(f"Found {len(relevant_content)} relevant sections")
     return relevant_content
 
 def ask_claude(question, context):
     """Send the document and question to Claude API."""
-    token_estimate = get_token_estimate(context + question)
+    token_estimate = len(context + question) // 4
     
     if token_estimate > 45000:
         logger.warning("Context too long, truncating...")
@@ -330,7 +332,7 @@ def ask_question():
 
     # Format context with section boundaries and scores
     context_parts = []
-    for item in sorted(relevant_content, key=lambda x: x['score'], reverse=True):
+    for item in relevant_content:
         context_parts.append(f"""
 === {item['section']} (درجة التطابق: {item['score']:.2f}) ===
 {item['text']}
@@ -353,8 +355,7 @@ def list_sections():
     for section, content in DOC_PROCESSOR.sections.items():
         sections.append({
             "title": section,
-            "char_count": len(DOC_PROCESSOR.section_text[section]),
-            "chunk_count": len(content)
+            "char_count": len(content),
         })
     
     return jsonify({"sections": sections})
