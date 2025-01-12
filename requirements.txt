@@ -4,4 +4,5 @@ requests
 scikit-learn
 numpy
 pdfplumber
-PyPDF2
+PyPDF2 
+gunicorn
