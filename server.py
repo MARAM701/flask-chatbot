@@ -108,15 +108,21 @@ class DocumentProcessor:
 
 def process_gpt_response(gpt_response):
     """Format GPT response with page number"""
-    section_match = re.search(r"المصدر: (.+?) - صفحة", gpt_response)
+    section_match = re.search(r"المصدر: ([^-\n]+)", gpt_response)
     if not section_match:
         return gpt_response
     
     section_name = section_match.group(1).strip()
     page_number = TOC_PAGE_MAP.get(section_name, "غير متوفر")
     
-    # Return the response as is since the page number is already included in the format
-    return gpt_response
+    # Replace the page number in the response
+    result = re.sub(
+        r'(المصدر: [^-\n]+)(?:-[^"\n]*)?',
+        f'\\1 - صفحة {page_number}',
+        gpt_response
+    )
+    
+    return result
 
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
