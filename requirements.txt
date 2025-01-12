@@ -1,9 +1,6 @@
 Flask
 flask-cors
-requests
-gunicorn
-python-docx
-numpy
 python-dotenv
-scikit-learn
-faiss-cpu
+requests
+python-docx
+gunicorn
