@@ -100,17 +100,6 @@ class DocumentProcessor:
             # Store full document text
             self.document_text = '\n\n'.join(para.text for para in doc.paragraphs if para.text.strip())
             
-            # Verify all expected sections were found
-            found_headers = set(self.sections.keys())
-            expected_headers = set(KNOWN_HEADERS)
-            missing_headers = expected_headers - found_headers
-            
-            if missing_headers:
-                logger.warning(f"Missing expected headers: {missing_headers}")
-            
-            logger.info(f"Document loaded successfully with {len(self.sections)} sections")
-            logger.info(f"Found sections: {list(self.sections.keys())}")
-            
             return True
             
         except Exception as e:
@@ -118,16 +107,16 @@ class DocumentProcessor:
             return False
 
 def process_gpt_response(gpt_response):
-    """Add page number to GPT's response"""
-    section_match = re.search(r"القسم: (.+?)(?:\n|$)", gpt_response, re.MULTILINE)
+    """Format GPT response with page number"""
+    section_match = re.search(r"المصدر: (.+?) - صفحة", gpt_response)
     if not section_match:
         return gpt_response
     
     section_name = section_match.group(1).strip()
     page_number = TOC_PAGE_MAP.get(section_name, "غير متوفر")
     
-    # Add page number to the end of the response
-    return f"{gpt_response}\nالصفحة: {page_number}"
+    # Return the response as is since the page number is already included in the format
+    return gpt_response
 
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
@@ -136,33 +125,26 @@ def ask_gpt4(question, context):
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك الالتزام بالقواعد التالية بشكل صارم:
 
-    1. إذا وجدت المعلومة في النص، اذكر القسم بالتحديد.
-    2. انقل النص الأصلي الذي يحتوي على الإجابة.
-    3. إذا لم تجد المعلومة، قل ذلك بوضوح.
-    4. لا تستنتج أو تخمن - اعتمد فقط على ما ورد في النص.
-    5. إذا كانت المعلومة قائمة بالأسماء أو في شكل قائمة، قم بذكر القائمة كما هي.
-    6. تعامل مع القوائم والنقاط كجزء من المعلومات في النص.
-    7. لا تتجاهل الأسطر القصيرة التي قد تكون ذات مغزى.
+    1. قدم الإجابة بالتنسيق التالي بالضبط:
+    **الإجابة:** [إجابتك المبنية على النص فقط]
+    📖 المصدر: [اسم القسم] - صفحة [رقم الصفحة]
+    **النص الأصلي:** "[النص الحرفي من المستند]"
 
-    نموذج الإجابة: 
-    - الإجابة: [إجابتك المبنية على النص فقط] 
-    - النص الأصلي: [النص الحرفي من المستند]
-    - القسم: [اسم القسم الذي وجدت فيه المعلومة]
-    
-    إذا لم تجد المعلومة:
-    - لم أجد معلومات في النص تجيب على هذا السؤال."""
+    2. إذا لم تجد المعلومة في النص، اكتب:
+    **الإجابة:** عذراً، لم أجد معلومات في النص تجيب على هذا السؤال.
+
+    3. التزم بالقواعد التالية:
+    - اعتمد فقط على المعلومات الموجودة في النص
+    - لا تستنتج أو تخمن
+    - انقل النص الأصلي حرفياً
+    - تعامل مع القوائم والنقاط كجزء من المعلومات"""
 
     user_message = f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط.
 
 النص:
 {context}
 
-سؤال المستخدم: {question}
-
-تذكر:
-- اذكر القسم الذي وجدت فيه المعلومة
-- انقل النص الأصلي حرفياً
-- لا تستنتج أو تخمن"""
+سؤال المستخدم: {question}"""
 
     try:
         response = client.chat.completions.create(
