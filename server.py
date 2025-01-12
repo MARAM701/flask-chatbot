@@ -4,7 +4,7 @@ import logging
 import os
 from docx import Document
 import re
-import requests
+from openai import OpenAI
 
 # Set up logging
 logging.basicConfig(
@@ -14,8 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger('server')
 
 DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
 CORS(app, 
@@ -28,6 +27,16 @@ CORS(app,
             "supports_credentials": True
         }
     })
+
+# Define known headers in order of appearance
+KNOWN_HEADERS = [
+    "كلمة معالي رئيس مجلس الإدارة",
+    "كلمة معالي رئيس المدينة",
+    "مجلس إدارة مدينة الملك عبدالعزيز للعلوم والتقنية",
+    "تعريف المصطلحات والاختصارات",
+    "الملخص التنفيذي",
+    "إنجازات العام في أرقام"
+]
 
 class DocumentProcessor:
     def __init__(self):
@@ -50,22 +59,28 @@ class DocumentProcessor:
             logger.info(f"Loading document from: {doc_path}")
             
             doc = Document(doc_path)
-            current_section = "مقدمة"
+            
+            # Initialize with first header or default
+            current_section = KNOWN_HEADERS[0] if KNOWN_HEADERS else "مقدمة"
             current_content = []
             
-            # Process document and identify sections
+            # Process document
             for paragraph in doc.paragraphs:
                 text = paragraph.text.strip()
                 if not text:
                     continue
                 
-                # Simple header detection - bold text
-                if paragraph.runs and paragraph.runs[0].bold:
+                # Check if this paragraph matches any known header
+                if text in KNOWN_HEADERS:
+                    # Save previous section content if exists
                     if current_content:
                         self.sections[current_section] = '\n'.join(current_content)
+                    # Start new section
                     current_section = text
                     current_content = []
+                    logger.debug(f"Found header: {text}")
                 else:
+                    # This is normal text ("عادي"), add to current section
                     current_content.append(text)
             
             # Save last section
@@ -75,61 +90,73 @@ class DocumentProcessor:
             # Store full document text
             self.document_text = '\n\n'.join(para.text for para in doc.paragraphs if para.text.strip())
             
+            # Verify all expected sections were found
+            found_headers = set(self.sections.keys())
+            expected_headers = set(KNOWN_HEADERS)
+            missing_headers = expected_headers - found_headers
+            
+            if missing_headers:
+                logger.warning(f"Missing expected headers: {missing_headers}")
+            
             logger.info(f"Document loaded successfully with {len(self.sections)} sections")
+            logger.info(f"Found sections: {list(self.sections.keys())}")
+            
             return True
             
         except Exception as e:
             logger.error(f"Error loading document: {str(e)}", exc_info=True)
             return False
 
-def ask_claude(question, context):
-    """Send the document and question to Claude API."""
-    messages = [
-        {
-            "role": "user",
-            "content": f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط. إذا كانت المعلومة موجودة، اذكر القسم الذي وجدتها فيه. إذا لم تكن المعلومة موجودة، وضح ذلك بشكل صريح.
+def ask_gpt4(question, context):
+    """Send the document and question to OpenAI GPT-4 API."""
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
+    يجب عليك الالتزام بالقواعد التالية بشكل صارم:
+
+    1. إذا وجدت المعلومة في النص، اذكر القسم بالتحديد.
+    2. انقل النص الأصلي الذي يحتوي على الإجابة.
+    3. إذا لم تجد المعلومة، قل ذلك بوضوح.
+    4. لا تستنتج أو تخمن - اعتمد فقط على ما ورد في النص.
+    5. إذا كانت المعلومة قائمة بالأسماء أو في شكل قائمة، قم بذكر القائمة كما هي.
+    6. تعامل مع القوائم والنقاط كجزء من المعلومات في النص.
+    7. لا تتجاهل الأسطر القصيرة التي قد تكون ذات مغزى.
+
+    نموذج الإجابة:
+    - القسم: [اسم القسم الذي وجدت فيه المعلومة]
+    - النص الأصلي: [النص الحرفي من المستند]
+    - الإجابة: [إجابتك المبنية على النص فقط]
+    
+    إذا لم تجد المعلومة:
+    - لم أجد معلومات في النص تجيب على هذا السؤال."""
+
+    user_message = f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط.
 
 النص:
 {context}
 
 سؤال المستخدم: {question}
 
-1. إذا وجدت المعلومة في النص، اذكر القسم بالتحديد.
-2. انقل النص الأصلي الذي يحتوي على الإجابة.
-3. إذا لم تجد المعلومة، قل ذلك بوضوح.
-4. لا تستنتج أو تخمن - اعتمد فقط على ما ورد في النص.
-5. إذا كانت المعلومة قائمة بالأسماء أو في شكل قائمة، قم بذكر القائمة كما هي.
-6. تعامل مع القوائم والنقاط كجزء من المعلومات في النص.
-7. لا تتجاهل الأسطر القصيرة التي قد تكون ذات مغزى."""
-        }
-    ]
-    
-    headers = {
-        "anthropic-version": "2023-06-01",
-        "x-api-key": CLAUDE_API_KEY,
-        "content-type": "application/json"
-    }
-    
-    data = {
-        "model": "claude-3-5-haiku-20241022",
-        "max_tokens": 1024,
-        "temperature": 0.1,
-        "messages": messages
-    }
+تذكر:
+- اذكر القسم الذي وجدت فيه المعلومة
+- انقل النص الأصلي حرفياً
+- لا تستنتج أو تخمن"""
 
     try:
-        response = requests.post(CLAUDE_API_URL, headers=headers, json=data)
+        response = client.chat.completions.create(
+            model="chatgpt-4o-latest",  # Using the specific model version you requested
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=1024
+        )
         
-        if response.status_code == 200:
-            return response.json()["content"][0]["text"]
-        elif response.status_code == 429:
-            return "تم تجاوز حد الطلبات. يرجى المحاولة مرة أخرى لاحقاً."
-        else:
-            logger.error(f"Error: {response.status_code} - {response.text}")
-            return f"حدث خطأ في معالجة الطلب."
+        return response.choices[0].message.content
             
     except Exception as e:
-        logger.error(f"Error calling Claude API: {str(e)}")
+        logger.error(f"Error calling OpenAI API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
 
 # Initialize document processor
@@ -163,7 +190,7 @@ def ask_question():
     
     context = "\n\n".join(context_parts)
     
-    answer = ask_claude(question, context)
+    answer = ask_gpt4(question, context)
     return jsonify({"answer": answer})
 
 @app.route('/api/sections', methods=['GET'])
