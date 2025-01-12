@@ -32,6 +32,28 @@ CORS(app,
         }
     })
 
+def preprocess_arabic_text(text):
+    """Preprocess Arabic text for better matching"""
+    # Remove diacritics (tashkeel)
+    text = re.sub(r'[\u064B-\u065F\u0670]', '', text)
+    
+    # Normalize alef variations
+    text = re.sub('[إأٱآا]', 'ا', text)
+    
+    # Normalize teh marbuta and ha
+    text = text.replace('ة', 'ه')
+    
+    # Normalize alef maksura and ya
+    text = text.replace('ى', 'ي')
+    
+    # Remove non-Arabic characters except spaces and numbers
+    text = re.sub(r'[^\u0600-\u06FF\s0-9]', ' ', text)
+    
+    # Remove extra spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
 class DocumentContent:
     def __init__(self):
         self.sections = defaultdict(list)
@@ -41,32 +63,44 @@ class DocumentContent:
         self.vectorizer = None
         self.vectors = None
         self.section_text = defaultdict(str)
+        self.raw_text = defaultdict(str)  # Store unprocessed text
 
 def is_heading(paragraph):
-    if paragraph.style and any(style in paragraph.style.name.lower() for style in ['heading', 'title', 'header', 'العنوان', 'عنوان']):
+    # Enhanced heading detection for Arabic
+    if paragraph.style and any(style in paragraph.style.name.lower() for style in 
+        ['heading', 'title', 'header', 'العنوان', 'عنوان', 'رئيسي', 'فرعي']):
         return True
     
     if paragraph.runs and paragraph.runs[0].bold:
+        # Check if it looks like a heading (short, ends with common markers)
+        text = paragraph.text.strip()
+        if len(text) < 100 and any(text.endswith(marker) for marker in [':', '：', '：', '：', '-', '.']):
+            return True
         return True
         
     return False
 
 def process_text_chunk(text, max_length=3000):
-    """Split text into chunks if too long - increased for Claude 3 Haiku"""
+    """Split text into chunks with overlap for better context"""
     if len(text) <= max_length:
         return [text]
     
+    # Split on sentence boundaries with overlap
     sentences = text.split('.')
     chunks = []
     current_chunk = []
     current_length = 0
+    overlap = 500  # Characters of overlap between chunks
     
     for sentence in sentences:
         sentence = sentence.strip() + '.'
-        if current_length + len(sentence) > max_length and current_chunk:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = []
-            current_length = 0
+        if current_length + len(sentence) > max_length - overlap and current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            chunks.append(chunk_text)
+            # Keep last few sentences for overlap
+            overlap_text = ' '.join(current_chunk[-3:])  # Keep last 3 sentences
+            current_chunk = [overlap_text]
+            current_length = len(overlap_text)
         current_chunk.append(sentence)
         current_length += len(sentence)
     
@@ -84,7 +118,6 @@ def load_docx_content():
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
         
-        # Find the docx file
         files = os.listdir(current_dir)
         docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
         
@@ -119,7 +152,8 @@ def load_docx_content():
                             'text': chunk,
                             'page': doc_content.current_page
                         })
-                    doc_content.section_text[doc_content.current_section] = current_text
+                    doc_content.section_text[doc_content.current_section] = preprocess_arabic_text(current_text)
+                    doc_content.raw_text[doc_content.current_section] = current_text
                 
                 doc_content.current_section = text
                 current_text = ""
@@ -136,7 +170,8 @@ def load_docx_content():
                     'text': chunk,
                     'page': doc_content.current_page
                 })
-            doc_content.section_text[doc_content.current_section] = current_text
+            doc_content.section_text[doc_content.current_section] = preprocess_arabic_text(current_text)
+            doc_content.raw_text[doc_content.current_section] = current_text
         
         for section, chunks in doc_content.sections.items():
             for chunk in chunks:
@@ -146,9 +181,14 @@ def load_docx_content():
                     'page': chunk['page']
                 })
         
-        # Initialize TF-IDF
-        doc_content.vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
-        texts = [item['text'] for item in doc_content.content]
+        # Initialize TF-IDF with Arabic preprocessing
+        doc_content.vectorizer = TfidfVectorizer(
+            max_features=5000,
+            ngram_range=(1, 3),  # Capture phrases up to 3 words
+            preprocessor=preprocess_arabic_text,
+            token_pattern=r'[\u0600-\u06FF\s]+',  # Arabic character pattern
+        )
+        texts = [preprocess_arabic_text(item['text']) for item in doc_content.content]
         doc_content.vectors = doc_content.vectorizer.fit_transform(texts)
         
         logger.info(f"Document processed successfully with {len(doc_content.content)} chunks")
@@ -160,14 +200,19 @@ def load_docx_content():
 
 DOC_PROCESSOR = load_docx_content()
 
-def find_relevant_content(question, top_k=3):
-    """Find relevant content using TF-IDF similarity"""
+def find_relevant_content(question, top_k=5):
+    """Find relevant content using TF-IDF similarity with debug logging"""
     if not DOC_PROCESSOR:
         return []
     
-    question_vector = DOC_PROCESSOR.vectorizer.transform([question])
+    processed_question = preprocess_arabic_text(question)
+    logger.debug(f"Processed question: {processed_question}")
+    
+    question_vector = DOC_PROCESSOR.vectorizer.transform([processed_question])
     similarities = np.array(DOC_PROCESSOR.vectors.dot(question_vector.T).toarray()).flatten()
     top_indices = np.argsort(similarities)[-top_k:][::-1]
+    
+    logger.debug(f"Top similarity scores: {similarities[top_indices]}")
     
     relevant_content = []
     seen_sections = set()
@@ -175,7 +220,9 @@ def find_relevant_content(question, top_k=3):
     for idx in top_indices:
         content = DOC_PROCESSOR.content[idx]
         if content['section'] not in seen_sections:
-            content['text'] = DOC_PROCESSOR.section_text[content['section']]
+            logger.debug(f"Matched section: {content['section']}, Score: {similarities[idx]}")
+            # Use raw text instead of processed text for Claude
+            content['text'] = DOC_PROCESSOR.raw_text[content['section']]
             relevant_content.append(content)
             seen_sections.add(content['section'])
     
@@ -185,21 +232,25 @@ def ask_claude(question, context):
     """Send the document and question to Claude API."""
     token_estimate = get_token_estimate(context + question)
     
-    if token_estimate > 45000:  # Leave room for response
+    if token_estimate > 45000:
         logger.warning("Context too long, truncating...")
         return "النص طويل جداً. يرجى تقسيم سؤالك إلى أجزاء أصغر."
         
     messages = [
         {
             "role": "user",
-            "content": f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط:
-    
+            "content": f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط. إذا كانت المعلومة موجودة، اذكر القسم الذي وجدتها فيه. إذا لم تكن المعلومة موجودة، وضح ذلك بشكل صريح.
+
 النص:
 {context}
 
 سؤال المستخدم: {question}
 
-يرجى تقديم إجابة مفصلة ودقيقة بالإشارة إلى النص."""
+تعليمات مهمة:
+1. إذا وجدت المعلومة في النص، اذكر القسم بالتحديد
+2. انقل النص الأصلي الذي يحتوي على الإجابة
+3. إذا لم تجد المعلومة، قل ذلك بوضوح
+4. لا تستنتج أو تخمن - اعتمد فقط على ما ورد في النص"""
         }
     ]
     
@@ -243,20 +294,46 @@ def ask_question():
         return jsonify({"error": "لم يتم تقديم سؤال"}), 400
 
     logger.info(f"Received question: {question}")
+    logger.debug(f"Processing question: {question}")
     
     if not DOC_PROCESSOR:
         return jsonify({"error": "لم يتم تحميل الوثيقة بشكل صحيح."}), 500
 
     relevant_content = find_relevant_content(question)
+    logger.debug(f"Found {len(relevant_content)} relevant sections")
     
     if not relevant_content:
         return jsonify({"answer": "عذرًا، لا توجد معلومات ذات صلة في التقرير."})
 
-    # Format context without page numbers
-    context = "\n\n".join([f"{item['text']}\n📖 المصدر: {item['section']}" for item in relevant_content])
+    # Enhanced context formatting with section boundaries
+    context_parts = []
+    for item in relevant_content:
+        context_parts.append(f"""
+=== {item['section']} ===
+{item['text']}
+""")
+    
+    context = "\n\n".join(context_parts)
+    logger.debug(f"Context length: {len(context)} characters")
     
     answer = ask_claude(question, context)
     return jsonify({"answer": answer})
+
+@app.route('/api/sections', methods=['GET'])
+def list_sections():
+    """Debug endpoint to list all document sections"""
+    if not DOC_PROCESSOR:
+        return jsonify({"error": "Document not loaded"}), 500
+        
+    sections = []
+    for section, content in DOC_PROCESSOR.sections.items():
+        sections.append({
+            "title": section,
+            "char_count": len(DOC_PROCESSOR.section_text[section]),
+            "chunk_count": len(content)
+        })
+    
+    return jsonify({"sections": sections})
 
 def _build_cors_preflight_response():
     response = make_response()
@@ -267,7 +344,12 @@ def _build_cors_preflight_response():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "document_loaded": bool(DOC_PROCESSOR), "document_path": DOCUMENT_PATH}), 200
+    return jsonify({
+        "status": "healthy",
+        "document_loaded": bool(DOC_PROCESSOR),
+        "document_path": DOCUMENT_PATH,
+        "sections_count": len(DOC_PROCESSOR.sections) if DOC_PROCESSOR else 0
+    }), 200
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
