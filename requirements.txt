@@ -3,7 +3,4 @@ flask-cors
 python-dotenv
 requests
 python-docx
-numpy
-scikit-learn
 gunicorn
-python-docx
