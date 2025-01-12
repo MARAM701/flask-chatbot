@@ -6,8 +6,3 @@ python-docx
 faiss-cpu
 numpy
 python-dotenv
-transformers
-torch 
-onnx
-onnxruntime
-accelerate
