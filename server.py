@@ -38,6 +38,16 @@ KNOWN_HEADERS = [
     "إنجازات العام في أرقام"
 ]
 
+# Add TOC page mapping
+TOC_PAGE_MAP = {
+    "كلمة معالي رئيس مجلس الإدارة": 8,
+    "كلمة معالي رئيس المدينة": 10,
+    "مجلس إدارة مدينة الملك عبدالعزيز للعلوم والتقنية": 12,
+    "تعريف المصطلحات والاختصارات": 14,
+    "الملخص التنفيذي": 18,
+    "إنجازات العام في أرقام": 20
+}
+
 class DocumentProcessor:
     def __init__(self):
         self.sections = {}
@@ -107,6 +117,18 @@ class DocumentProcessor:
             logger.error(f"Error loading document: {str(e)}", exc_info=True)
             return False
 
+def process_gpt_response(gpt_response):
+    """Add page number to GPT's response"""
+    section_match = re.search(r"القسم: (.+?)(?:\n|$)", gpt_response, re.MULTILINE)
+    if not section_match:
+        return gpt_response
+    
+    section_name = section_match.group(1).strip()
+    page_number = TOC_PAGE_MAP.get(section_name, "غير متوفر")
+    
+    # Add page number to the end of the response
+    return f"{gpt_response}\nالصفحة: {page_number}"
+
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -144,7 +166,7 @@ def ask_gpt4(question, context):
 
     try:
         response = client.chat.completions.create(
-            model="chatgpt-4o-latest",  # Using the specific model version you requested
+            model="chatgpt-4o-latest",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -153,7 +175,8 @@ def ask_gpt4(question, context):
             max_tokens=1024
         )
         
-        return response.choices[0].message.content
+        gpt_response = response.choices[0].message.content
+        return process_gpt_response(gpt_response)
             
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {str(e)}")
@@ -204,6 +227,7 @@ def list_sections():
         sections.append({
             "title": section,
             "char_count": len(content),
+            "page": TOC_PAGE_MAP.get(section, "غير متوفر")
         })
     
     return jsonify({"sections": sections})
