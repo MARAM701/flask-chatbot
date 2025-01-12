@@ -1,8 +1,9 @@
 Flask
-Flask-Cors
+flask-cors
+python-dotenv
 requests
-scikit-learn
+python-docx
 numpy
-pdfplumber
-PyPDF2 
+scikit-learn
 gunicorn
+python-docx
