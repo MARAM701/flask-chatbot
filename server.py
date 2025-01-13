@@ -107,31 +107,34 @@ class DocumentProcessor:
             return False
 
 def process_gpt_response(gpt_response):
-    """Format GPT response with numbered references and section details"""
-    # Find all section references in the response
+    """Format GPT response maintaining emoji source reference and adding numbered references"""
+    # First find all section references
     section_matches = re.finditer(r"المصدر: ([^-\n]+)", gpt_response)
     
-    # Collect all unique sections
+    # Collect all unique sections while preserving the response format
     sections = []
     seen_sections = set()
+    
+    result = gpt_response
+    
+    # Process each section reference
     for match in section_matches:
         section_name = match.group(1).strip()
         if section_name not in seen_sections:
             sections.append(section_name)
             seen_sections.add(section_name)
+            
+            # Get page number for this section
+            page_number = TOC_PAGE_MAP.get(section_name, "غير متوفر")
+            
+            # Replace the source reference with emoji format
+            result = re.sub(
+                f'المصدر: {re.escape(section_name)}',
+                f'📖 المصدر: {section_name} - صفحة {page_number}',
+                result
+            )
     
-    result = gpt_response
-    
-    # Replace section references with numbered references
-    for idx, section in enumerate(sections, 1):
-        # Replace the inline reference
-        result = re.sub(
-            f'المصدر: {re.escape(section)}',
-            f'[{idx}]',
-            result
-        )
-    
-    # Add the reference list at the end if there are sections
+    # Add numbered references at the end if there are sections
     if sections:
         result += "\n\nالمراجع:\n"
         for idx, section in enumerate(sections, 1):
@@ -147,15 +150,18 @@ def ask_gpt4(question, context):
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك الالتزام بالقواعد التالية بشكل صارم:
 
-    1. قدم الإجابة بالتنسيق التالي:
-    **الإجابة:** [إجابتك المبنية على النص مع إضافة أرقام المراجع بين قوسين، مثال: وفقاً للتقرير [1] تم إنجاز...]
+    1. قدم الإجابة بالتنسيق التالي بالضبط:
+    **الإجابة:** [إجابتك المبنية على النص]
     
     إذا كانت المعلومات من قسم واحد:
-    **النص الأصلي:** "[النص الحرفي من المستند]" [1]
+    📖 المصدر: [اسم القسم]
+    **النص الأصلي:** "[النص الحرفي من المستند]"
     
     إذا كانت المعلومات من عدة أقسام:
-    **النص الأول:** "[النص الحرفي الأول]" [1]
-    **النص الثاني:** "[النص الحرفي الثاني]" [2]
+    📖 المصدر: [اسم القسم الأول]
+    **النص الأول:** "[النص الحرفي الأول]"
+    📖 المصدر: [اسم القسم الثاني]
+    **النص الثاني:** "[النص الحرفي الثاني]"
     (وهكذا لكل قسم)
 
     2. إذا لم تجد المعلومة في النص، اكتب:
@@ -165,8 +171,8 @@ def ask_gpt4(question, context):
     - اعتمد فقط على المعلومات الموجودة في النص
     - لا تستنتج أو تخمن
     - انقل النص الأصلي حرفياً لكل قسم
-    - استخدم أرقام المراجع [1]، [2]، إلخ في الإجابة
-    - اذكر جميع الأقسام التي وجدت فيها معلومات ذات صلة"""
+    - اذكر المصدر لكل قسم بالتنسيق المطلوب
+    - تعامل مع القوائم والنقاط كجزء من المعلومات"""
 
     user_message = f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط.
 
