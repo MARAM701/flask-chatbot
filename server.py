@@ -107,20 +107,36 @@ class DocumentProcessor:
             return False
 
 def process_gpt_response(gpt_response):
-    """Format GPT response with page number"""
-    section_match = re.search(r"المصدر: ([^-\n]+)", gpt_response)
-    if not section_match:
-        return gpt_response
+    """Format GPT response with numbered references and section details"""
+    # Find all section references in the response
+    section_matches = re.finditer(r"المصدر: ([^-\n]+)", gpt_response)
     
-    section_name = section_match.group(1).strip()
-    page_number = TOC_PAGE_MAP.get(section_name, "غير متوفر")
+    # Collect all unique sections
+    sections = []
+    seen_sections = set()
+    for match in section_matches:
+        section_name = match.group(1).strip()
+        if section_name not in seen_sections:
+            sections.append(section_name)
+            seen_sections.add(section_name)
     
-    # Replace the page number in the response
-    result = re.sub(
-        r'(المصدر: [^-\n]+)(?:-[^"\n]*)?',
-        f'\\1 - صفحة {page_number}',
-        gpt_response
-    )
+    result = gpt_response
+    
+    # Replace section references with numbered references
+    for idx, section in enumerate(sections, 1):
+        # Replace the inline reference
+        result = re.sub(
+            f'المصدر: {re.escape(section)}',
+            f'[{idx}]',
+            result
+        )
+    
+    # Add the reference list at the end if there are sections
+    if sections:
+        result += "\n\nالمراجع:\n"
+        for idx, section in enumerate(sections, 1):
+            page_number = TOC_PAGE_MAP.get(section, "غير متوفر")
+            result += f"[{idx}] {section} - صفحة {page_number}\n"
     
     return result
 
@@ -131,10 +147,16 @@ def ask_gpt4(question, context):
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك الالتزام بالقواعد التالية بشكل صارم:
 
-    1. قدم الإجابة بالتنسيق التالي بالضبط:
-    **الإجابة:** [إجابتك المبنية على النص فقط]
-    📖 المصدر: [اسم القسم] - صفحة [رقم الصفحة]
-    **النص الأصلي:** "[النص الحرفي من المستند]"
+    1. قدم الإجابة بالتنسيق التالي:
+    **الإجابة:** [إجابتك المبنية على النص مع إضافة أرقام المراجع بين قوسين، مثال: وفقاً للتقرير [1] تم إنجاز...]
+    
+    إذا كانت المعلومات من قسم واحد:
+    **النص الأصلي:** "[النص الحرفي من المستند]" [1]
+    
+    إذا كانت المعلومات من عدة أقسام:
+    **النص الأول:** "[النص الحرفي الأول]" [1]
+    **النص الثاني:** "[النص الحرفي الثاني]" [2]
+    (وهكذا لكل قسم)
 
     2. إذا لم تجد المعلومة في النص، اكتب:
     **الإجابة:** عذراً، لم أجد معلومات في النص تجيب على هذا السؤال.
@@ -142,8 +164,9 @@ def ask_gpt4(question, context):
     3. التزم بالقواعد التالية:
     - اعتمد فقط على المعلومات الموجودة في النص
     - لا تستنتج أو تخمن
-    - انقل النص الأصلي حرفياً
-    - تعامل مع القوائم والنقاط كجزء من المعلومات"""
+    - انقل النص الأصلي حرفياً لكل قسم
+    - استخدم أرقام المراجع [1]، [2]، إلخ في الإجابة
+    - اذكر جميع الأقسام التي وجدت فيها معلومات ذات صلة"""
 
     user_message = f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط.
 
