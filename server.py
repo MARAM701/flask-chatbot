@@ -114,21 +114,35 @@ def process_gpt_response(gpt_response):
         
     # Handle single source response
     if "📖 المصدر:" in gpt_response:
-        source_section = re.search(r'📖 المصدر:\s*(.*?)\s*-\s*صفحة\s*(\d+)', gpt_response)
+        source_section = re.search(r'📖 المصدر:\s*(.*?)(?=\s*-|$)', gpt_response)
         if source_section:
             section_name = source_section.group(1).strip()
-            page_number = TOC_PAGE_MAP.get(section_name, source_section.group(2))
-            # Convert to numbered reference format
-            gpt_response = re.sub(r'📖 المصدر:.*?\n', 
-                                f'📖 المصادر:\n[1]: {section_name} - صفحة {page_number}\n', 
-                                gpt_response)
+            page_number = TOC_PAGE_MAP.get(section_name)
+            if page_number:
+                # Convert to numbered reference format with correct page number from TOC
+                gpt_response = re.sub(r'📖 المصدر:.*?\n', 
+                                    f'📖 المصادر:\n[1]: {section_name} - صفحة {page_number}\n', 
+                                    gpt_response)
+    
+    # Handle multiple sources
+    elif "📖 المصادر:" in gpt_response:
+        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|$)', gpt_response, re.DOTALL)
+        if sources_section:
+            sources_text = sources_section.group(1)
+            modified_sources = []
             
-            # Add reference number to original text if missing
-            if "**النص الأصلي:**" in gpt_response:
-                original_text = re.search(r'\*\*النص الأصلي:\*\*(.*?)(?=\n\n|\Z)', gpt_response, re.DOTALL)
-                if original_text and '[1]:' not in original_text.group(1):
-                    new_text = f'\n**النص الأصلي:**\n[1]: {original_text.group(1).strip()}'
-                    gpt_response = re.sub(r'\*\*النص الأصلي:\*\*.*?(?=\n\n|\Z)', new_text, gpt_response, flags=re.DOTALL)
+            # Process each reference line
+            for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\s*-|\n|$)', sources_text):
+                ref_num = ref_match.group(1)
+                section_name = ref_match.group(2).strip()
+                page_number = TOC_PAGE_MAP.get(section_name)
+                if page_number:
+                    modified_sources.append(f'[{ref_num}]: {section_name} - صفحة {page_number}')
+            
+            if modified_sources:
+                # Replace the entire sources section
+                new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
+                gpt_response = re.sub(r'📖 المصادر:.*?(?=\*\*|$)', new_sources, gpt_response, flags=re.DOTALL)
     
     return gpt_response
 
