@@ -106,67 +106,19 @@ class DocumentProcessor:
             logger.error(f"Error loading document: {str(e)}", exc_info=True)
             return False
 
-def process_gpt_response(gpt_response):
-    """Format GPT response with numbered references"""
-    # Check if it's a "no information found" response
-    if "عذراً، لم أجد معلومات" in gpt_response:
-        return gpt_response
-        
-    # Handle single source response
-    if "📖 المصدر:" in gpt_response:
-        source_section = re.search(r'📖 المصدر:\s*(.*?)(?=\s*-|$)', gpt_response)
-        if source_section:
-            section_name = source_section.group(1).strip()
-            page_number = TOC_PAGE_MAP.get(section_name)
-            if page_number:
-                # Replace only the source line, keeping the rest intact
-                gpt_response = re.sub(
-                    r'📖 المصدر:.*?(?=\*\*|\n\n|\Z)', 
-                    f'📖 المصادر:\n[1]: {section_name} - صفحة {page_number}', 
-                    gpt_response,
-                    flags=re.DOTALL
-                )
-    
-    # Handle multiple sources
-    elif "📖 المصادر:" in gpt_response:
-        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
-        if sources_section:
-            sources_text = sources_section.group(1)
-            modified_sources = []
-            
-            # Process each reference line
-            for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\s*-|\n|$)', sources_text):
-                ref_num = ref_match.group(1)
-                section_name = ref_match.group(2).strip()
-                page_number = TOC_PAGE_MAP.get(section_name)
-                if page_number:
-                    modified_sources.append(f'[{ref_num}]: {section_name} - صفحة {page_number}')
-            
-            if modified_sources:
-                # Replace only the sources section, keeping the rest intact
-                new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
-                gpt_response = re.sub(
-                    r'📖 المصادر:.*?(?=\*\*|\n\n|\Z)',
-                    new_sources,
-                    gpt_response,
-                    flags=re.DOTALL
-                )
-    
-    return gpt_response
-
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
     
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
-    يجب عليك الالتزام بالقواعد التالية بشكل صارم:
+    يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
 
     1. إذا كانت المعلومات مأخوذة من قسم واحد فقط:
     **الإجابة:** 
     [إجابتك المبنية على النص] [1]
 
     **النص الأصلي:**
-    "[النص الحرفي من المستند]"
+    "[أول 50 حرف من النص المقتبس]..."
     
     📖 المصدر:
     [اسم القسم] - صفحة [رقم الصفحة]
@@ -176,8 +128,8 @@ def ask_gpt4(question, context):
     [إجابتك المبنية على النص مع رقم المرجع بعد كل معلومة]
 
     **النص الأصلي:**
-    [1]: "[النص الحرفي من المصدر الأول]"
-    [2]: "[النص الحرفي من المصدر الثاني]"
+    [1]: "[أول 50 حرف من النص المقتبس]..."
+    [2]: "[أول 50 حرف من النص المقتبس]..."
     
     📖 المصادر:
     [1]: [اسم القسم الأول] - صفحة [رقم الصفحة]
@@ -188,11 +140,13 @@ def ask_gpt4(question, context):
 
     4. التزم بالقواعد التالية:
     - اعتمد فقط على المعلومات الموجودة في النص
+    - ابحث في جميع الأقسام قبل تقديم الإجابة
     - أضف رقم المرجع [N] بعد كل معلومة مقتبسة
-    - انقل النص الأصلي حرفياً
+    - اقتبس فقط أول 50 حرف من النص الأصلي متبوعة بثلاث نقاط (...)
     - رتب المراجع حسب ظهورها في الإجابة"""
 
-    user_message = f"""هنا نص التقرير. أجب على سؤال المستخدم بناءً على المعلومات الواردة في النص فقط.
+    user_message = f"""قم بالبحث في جميع أقسام النص التالي وأجب على سؤال المستخدم بناءً على المعلومات الواردة.
+    تأكد من ذكر جميع المصادر ذات الصلة.
 
 النص:
 {context}
@@ -207,7 +161,7 @@ def ask_gpt4(question, context):
                 {"role": "user", "content": user_message}
             ],
             temperature=0.1,
-            max_tokens=1024
+            max_tokens=1500
         )
         
         gpt_response = response.choices[0].message.content
@@ -216,6 +170,46 @@ def ask_gpt4(question, context):
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
+
+def process_gpt_response(gpt_response):
+    """Format GPT response with numbered references"""
+    # Check if it's a "no information found" response
+    if "عذراً، لم أجد معلومات" in gpt_response:
+        return gpt_response
+        
+    # Handle both single and multiple sources
+    sources_section = None
+    
+    if "📖 المصدر:" in gpt_response:
+        # Convert single source format to multiple source format
+        gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
+        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
+    elif "📖 المصادر:" in gpt_response:
+        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
+    
+    if sources_section:
+        sources_text = sources_section.group(1)
+        modified_sources = []
+        
+        # Process each reference line
+        for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\s*-|\n|$)', sources_text):
+            ref_num = ref_match.group(1)
+            section_name = ref_match.group(2).strip()
+            page_number = TOC_PAGE_MAP.get(section_name)
+            if page_number:
+                modified_sources.append(f'[{ref_num}]: {section_name} - صفحة {page_number}')
+        
+        if modified_sources:
+            # Replace the sources section while preserving the rest of the response
+            new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
+            gpt_response = re.sub(
+                r'📖 المصادر:.*?(?=\*\*|\n\n|\Z)',
+                new_sources,
+                gpt_response,
+                flags=re.DOTALL
+            )
+    
+    return gpt_response
 
 # Initialize document processor
 DOC_PROCESSOR = DocumentProcessor()
