@@ -4,7 +4,7 @@ import logging
 import os
 from docx import Document
 import re
-import google.generativeai as genai # Changed from OpenAI to Gemini
+import google.generativeai as genai  # Changed from OpenAI to Gemini
 
 # Set up logging
 logging.basicConfig(
@@ -17,16 +17,16 @@ DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # New API key for Gemini
 
 app = Flask(__name__)
-CORS(app, 
-    resources={
-        r"/api/*": {
-            "origins": ["https://superlative-belekoy-1319b4.netlify.app"],
-            "methods": ["POST", "OPTIONS"],
-            "allow_headers": ["Content-Type"],
-            "expose_headers": ["Access-Control-Allow-Origin"],
-            "supports_credentials": True
-        }
-    })
+CORS(app,
+     resources={
+         r"/api/*": {
+             "origins": ["https://superlative-belekoy-1319b4.netlify.app"],
+             "methods": ["POST", "OPTIONS"],
+             "allow_headers": ["Content-Type"],
+             "expose_headers": ["Access-Control-Allow-Origin"],
+             "supports_credentials": True
+         }
+     })
 
 # Define known headers in order of appearance
 KNOWN_HEADERS = [
@@ -108,6 +108,7 @@ TOC_PAGE_MAP = {
     "الخاتمة": 232
 }
 
+
 class DocumentProcessor:
     def __init__(self):
         self.sections = {}
@@ -117,29 +118,29 @@ class DocumentProcessor:
         try:
             current_dir = os.getcwd()
             logger.info(f"Current working directory: {current_dir}")
-            
+
             files = os.listdir(current_dir)
             docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
-            
+
             if not docx_file:
                 logger.error("Document not found")
                 return False
-                
+
             doc_path = os.path.join(current_dir, docx_file)
             logger.info(f"Loading document from: {doc_path}")
-            
+
             doc = Document(doc_path)
-            
+
             # Initialize with first header or default
             current_section = KNOWN_HEADERS[0] if KNOWN_HEADERS else "مقدمة"
             current_content = []
-            
+
             # Process document
             for paragraph in doc.paragraphs:
                 text = paragraph.text.strip()
                 if not text:
                     continue
-                
+
                 # Check if this paragraph matches any known header
                 if text in KNOWN_HEADERS:
                     # Save previous section content if exists
@@ -152,24 +153,25 @@ class DocumentProcessor:
                 else:
                     # This is normal text ("عادي"), add to current section
                     current_content.append(text)
-            
+
             # Save last section
             if current_content:
                 self.sections[current_section] = '\n'.join(current_content)
-            
+
             # Store full document text
             self.document_text = '\n\n'.join(para.text for para in doc.paragraphs if para.text.strip())
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Error loading document: {str(e)}", exc_info=True)
             return False
 
+
 def ask_gemini(question, context):
     """Send the document and question to Gemini API."""
     genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key
-    
+
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
 
@@ -179,7 +181,7 @@ def ask_gemini(question, context):
 
     **النص الأصلي:**
     "[أول 50 حرف من النص المقتبس]..."
-    
+
     📖 المصدر:
     [اسم القسم] - صفحة [رقم الصفحة]
 
@@ -190,7 +192,7 @@ def ask_gemini(question, context):
     **النص الأصلي:**
     [1]: "[أول 30 حرف من النص المقتبس]..."
     [2]: "[أول 30 حرف من النص المقتبس]..."
-    
+
     📖 المصادر:
     [1]: [اسم القسم الأول] - صفحة [رقم الصفحة]
     [2]: [اسم القسم الثاني] - صفحة [رقم الصفحة]
@@ -213,7 +215,7 @@ def ask_gemini(question, context):
 
 سؤال المستخدم: {question}"""
 
-    try: 
+    try:
         response = model.generate_content(
             contents=[
                 {"role": "system", "parts": [system_prompt]},
@@ -227,31 +229,32 @@ def ask_gemini(question, context):
         gemini_response = response.text
 
         return process_gpt_response(gemini_response)
-            
+
     except Exception as e:
         logger.error(f"Error calling Gemini API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
+
 
 def process_gpt_response(gpt_response):
     """Format GPT response with numbered references"""
     # Check if it's a "no information found" response
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
-        
+
     # Handle both single and multiple sources
     sources_section = None
-    
+
     if "📖 المصدر:" in gpt_response:
         # Convert single source format to multiple source format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
     elif "📖 المصادر:" in gpt_response:
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
-    
+
     if sources_section:
         sources_text = sources_section.group(1)
         modified_sources = []
-        
+
         # Process each reference line
         for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\s*-|\n|$)', sources_text):
             ref_num = ref_match.group(1)
@@ -259,7 +262,7 @@ def process_gpt_response(gpt_response):
             page_number = TOC_PAGE_MAP.get(section_name)
             if page_number:
                 modified_sources.append(f'[{ref_num}]: {section_name} - صفحة {page_number}')
-        
+
         if modified_sources:
             # Replace the sources section while preserving the rest of the response
             new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
@@ -269,26 +272,28 @@ def process_gpt_response(gpt_response):
                 gpt_response,
                 flags=re.DOTALL
             )
-    
+
     return gpt_response
+
 
 # Initialize document processor
 DOC_PROCESSOR = DocumentProcessor()
 DOC_PROCESSOR.load_document()
 
+
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
     if request.method == "OPTIONS":
         return _build_cors_preflight_response()
-    
+
     data = request.json
     question = data.get('question')
-    
+
     if not question:
         return jsonify({"error": "لم يتم تقديم سؤال"}), 400
 
     logger.info(f"Received question: {question}")
-    
+
     if not DOC_PROCESSOR.sections:
         return jsonify({"error": "لم يتم تحميل الوثيقة بشكل صحيح."}), 500
 
@@ -300,18 +305,19 @@ def ask_question():
 {content}
 === نهاية {section} ===
 """)
-    
+
     context = "\n\n".join(context_parts)
-    
+
     answer = ask_gemini(question, context)
     return jsonify({"answer": answer})
+
 
 @app.route('/api/sections', methods=['GET'])
 def list_sections():
     """Debug endpoint to list all document sections"""
     if not DOC_PROCESSOR.sections:
         return jsonify({"error": "Document not loaded"}), 500
-        
+
     sections = []
     for section, content in DOC_PROCESSOR.sections.items():
         sections.append({
@@ -319,8 +325,9 @@ def list_sections():
             "char_count": len(content),
             "page": TOC_PAGE_MAP.get(section, "غير متوفر")
         })
-    
+
     return jsonify({"sections": sections})
+
 
 def _build_cors_preflight_response():
     response = make_response()
@@ -328,6 +335,7 @@ def _build_cors_preflight_response():
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
     response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
     return response
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -337,6 +345,7 @@ def health_check():
         "document_path": DOCUMENT_PATH,
         "sections_count": len(DOC_PROCESSOR.sections)
     }), 200
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
