@@ -4,7 +4,7 @@ import logging
 import os
 from docx import Document
 import re
-from googlegemini import Gemini  # Changed from OpenAI to Gemini
+import google.generativeai as genai # Changed from OpenAI to Gemini
 
 # Set up logging
 logging.basicConfig(
@@ -168,7 +168,7 @@ class DocumentProcessor:
 
 def ask_gemini(question, context):
     """Send the document and question to Gemini API."""
-    client = Gemini(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key
     
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
@@ -213,18 +213,19 @@ def ask_gemini(question, context):
 
 سؤال المستخدم: {question}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gemini-2.0-flash",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
+    try: 
+        response = model.generate_content(
+            contents=[
+                {"role": "system", "parts": [system_prompt]},
+                {"role": "user", "parts": [user_message]}
             ],
-            temperature=0.1,
-            max_tokens=1500
+            generation_config={
+                "temperature": 0.1,
+                "max_output_tokens": 1500
+            }
         )
-        
-        gemini_response = response.choices[0].message.content
+        gemini_response = response.text
+
         return process_gpt_response(gemini_response)
             
     except Exception as e:
