@@ -4,7 +4,7 @@ import logging
 import os
 from docx import Document
 import re
-from openai import OpenAI
+from googlegemini import Gemini  # Changed from OpenAI to Gemini
 
 # Set up logging
 logging.basicConfig(
@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger('server')
 
 DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # New API key for Gemini
 
 app = Flask(__name__)
 CORS(app, 
@@ -166,9 +166,9 @@ class DocumentProcessor:
             logger.error(f"Error loading document: {str(e)}", exc_info=True)
             return False
 
-def ask_gpt4(question, context):
-    """Send the document and question to OpenAI GPT-4 API."""
-    client = OpenAI(api_key=OPENAI_API_KEY)
+def ask_gemini(question, context):
+    """Send the document and question to Gemini API."""
+    client = Gemini(api_key=GEMINI_API_KEY)
     
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
@@ -215,7 +215,7 @@ def ask_gpt4(question, context):
 
     try:
         response = client.chat.completions.create(
-            model="chatgpt-4o-latest",
+            model="gemini-2.0-flash",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -224,11 +224,11 @@ def ask_gpt4(question, context):
             max_tokens=1500
         )
         
-        gpt_response = response.choices[0].message.content
-        return process_gpt_response(gpt_response)
+        gemini_response = response.choices[0].message.content
+        return process_gpt_response(gemini_response)
             
     except Exception as e:
-        logger.error(f"Error calling OpenAI API: {str(e)}")
+        logger.error(f"Error calling Gemini API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
 
 def process_gpt_response(gpt_response):
@@ -302,7 +302,7 @@ def ask_question():
     
     context = "\n\n".join(context_parts)
     
-    answer = ask_gpt4(question, context)
+    answer = ask_gemini(question, context)
     return jsonify({"answer": answer})
 
 @app.route('/api/sections', methods=['GET'])
