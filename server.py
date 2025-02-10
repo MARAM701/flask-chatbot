@@ -171,7 +171,7 @@ class DocumentProcessor:
 def ask_gemini(question, context):
     """Send the document and question to Gemini API."""
     genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')
 
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
