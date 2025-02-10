@@ -221,12 +221,7 @@ def ask_gemini(question, context):
         combined_message = system_prompt + "\n\n" + user_message
 
         response = model.generate_content(
-            [
-                {
-                    "role": "user",
-                    "parts": [{"text": combined_message}]
-                }
-            ],
+            combined_message,
             generation_config={
                 "temperature": 0.1,
                 "max_output_tokens": 1500
