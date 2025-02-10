@@ -170,7 +170,7 @@ class DocumentProcessor:
 
 def ask_gemini(question, context):
     """Send the document and question to Gemini API."""
-    genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key 
+    genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key
     model = genai.GenerativeModel('gemini-2.0-flash')
 
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
@@ -217,10 +217,15 @@ def ask_gemini(question, context):
 سؤال المستخدم: {question}"""
 
     try:
+        # Combine system_prompt and user_message into a single message
+        combined_message = system_prompt + "\n\n" + user_message
+
         response = model.generate_content(
-            contents=[
-                {"role": "system", "parts": [system_prompt]},
-                {"role": "user", "parts": [user_message]}
+            [
+                {
+                    "role": "user",
+                    "parts": [{"text": combined_message}]
+                }
             ],
             generation_config={
                 "temperature": 0.1,
