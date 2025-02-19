@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'arabic_file.docx')
+DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'test_second.docx')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # New API key for Gemini
 
 app = Flask(__name__)
