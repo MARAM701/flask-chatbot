@@ -2,6 +2,6 @@ Flask
 flask-cors
 python-dotenv
 requests
+python-docx
 gunicorn
-azure-search-documents
-openai
+google-generativeai
