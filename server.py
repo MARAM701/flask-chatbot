@@ -28,138 +28,72 @@ CORS(app,
          }
      })
 
-# Define known headers in order of appearance
-KNOWN_HEADERS = [
-    "كلمة معالي رئيس مجلس الإدارة",
-    "كلمة معالي رئيس المدينة",
-    "مجلس إدارة مدينة الملك عبدالعزيز للعلوم والتقنية",
-    "تعريف المصطلحات والاختصارات",
-    "الملخص التنفيذي",
-    "انجازات العام في ارقام",
-    "ثانياًً: التقرير التفصيلي",
-    "موجز الأداء",
-    "المبادرات",
-    "أبرز الأعمال والإنجازات - البحث والتطوير",
-    "قطاع الصحة",
-    "قطاع الاستدامة والبيئة",
-    "قطاع الطاقة والصناعة",
-    "قطاع اقتصاديات المستقبل",
-    "واحه الابتكار",
-    "الكراج",
-    "تسويق ونقل التقنية",
-    "تطوير القدرات البشريه",
-    "اكاديميه 32",
-    "مركز الثورة الصناعية الرابعة السعودي",
-    "خدمات الانترنت",
-    "التحول الرقمي",
-    "التنمية المستدامة",
-    "التعاون والشراكات",
-    "الاتفاقيات الدولية",
-    "الاتفاقيات المحلية",
-    "التواصل الاستراتيجي",
-    "الأنشطة العلمية",
-    "الأنشطة الإعلامية",
-    "المشاركات الدولية",
-    "الفرص والعوامل المساعده علي تحقيقها",
-    "التحديات والدعم المطلوب",
-    "الوضع الراهن للقوى البشرية",
-    "الميزانية والإيرادات وعقود المشروعات",
-    "الشؤون القانونية",
-    "الخاتمة"
-]
-
-# Add TOC page mapping
-TOC_PAGE_MAP = {
-    "كلمة معالي رئيس مجلس الإدارة": 8,
-    "كلمة معالي رئيس المدينة": 10,
-    "مجلس إدارة مدينة الملك عبدالعزيز للعلوم والتقنية": 12,
-    "تعريف المصطلحات والاختصارات": 14,
-    "الملخص التنفيذي": 18,
-    "انجازات العام في ارقام": 20,
-    "ثانياًً: التقرير التفصيلي": 22,
-    "موجز الأداء": 24,
-    "المبادرات": 26,
-    "أبرز الأعمال والإنجازات - البحث والتطوير": 38,
-    "قطاع الصحة": 40,
-    "قطاع الاستدامة والبيئة": 54,
-    "قطاع الطاقة والصناعة": 62,
-    "قطاع اقتصاديات المستقبل": 90,
-    "واحه الابتكار": 120,
-    "الكراج": 130,
-    "تسويق ونقل التقنية": 142,
-    "تطوير القدرات البشريه": 144,
-    "اكاديميه 32": 146,
-    "مركز الثورة الصناعية الرابعة السعودي": 152,
-    "خدمات الانترنت": 160,
-    "التحول الرقمي": 164,
-    "التنمية المستدامة": 168,
-    "التعاون والشراكات": 174,
-    "الاتفاقيات الدولية": 177,
-    "الاتفاقيات المحلية": 180,
-    "التواصل الاستراتيجي": 186,
-    "الأنشطة العلمية": 188,
-    "الأنشطة الإعلامية": 189,
-    "المشاركات الدولية": 197,
-    "الفرص والعوامل المساعده علي تحقيقها": 208,
-    "التحديات والدعم المطلوب": 212,
-    "الوضع الراهن للقوى البشرية": 216,
-    "الميزانية والإيرادات وعقود المشروعات": 222,
-    "الشؤون القانونية": 230,
-    "الخاتمة": 232
-}
 
 
 class DocumentProcessor:
     def __init__(self):
         self.sections = {}
-        self.document_text = ""
+        self.document_text = "" 
+        self.file_header = "" 
 
     def load_document(self):
         try:
             current_dir = os.getcwd()
             logger.info(f"Current working directory: {current_dir}")
 
-            files = os.listdir(current_dir)
-            docx_file = next((f for f in files if f.strip().endswith('arabic_file.docx')), None)
-
-            if not docx_file:
+            doc_path = os.path.join(current_dir, DOCUMENT_PATH)
+            if not os.path.exists(doc_path):
                 logger.error("Document not found")
                 return False
-
-            doc_path = os.path.join(current_dir, docx_file)
             logger.info(f"Loading document from: {doc_path}")
 
-            doc = Document(doc_path)
-
-            # Initialize with first header or default
-            current_section = KNOWN_HEADERS[0] if KNOWN_HEADERS else "مقدمة"
+            doc = Document(doc_path) 
+                       # Initialize with first header or default
+            current_section = None
             current_content = []
+            header_pattern = re.compile(r'^(#{3,})\s*(.+?)\s*\1$')
 
-            # Process document
+
+
+
+            # Process document using regex to detect headers
             for paragraph in doc.paragraphs:
                 text = paragraph.text.strip()
                 if not text:
                     continue
 
-                # Check if this paragraph matches any known header
-                if text in KNOWN_HEADERS:
-                    # Save previous section content if exists
-                    if current_content:
-                        self.sections[current_section] = '\n'.join(current_content)
-                    # Start new section
-                    current_section = text
-                    current_content = []
-                    logger.debug(f"Found header: {text}")
+                match = header_pattern.match(text)
+                if match:
+                    level = len(match.group(1))
+                    header_text = match.group(2).strip()
+                    logger.debug(f"Found header: {header_text} with level {level}")
+                    if level == 3:
+                        # إذا كانت العلامات ثلاث (###): هذا عنوان الملف
+                        self.file_header = text
+                        continue  # لا تُضيف إلى أي قسم
+                    elif level >= 4:
+                        # إذا كانت العلامات أربع أو أكثر: هذا عنوان قسم
+                        if current_section and current_content:
+                            self.sections[current_section] = '\n'.join(current_content)
+                        current_section = header_text
+                        current_content = []
+                        continue
                 else:
-                    # This is normal text ("عادي"), add to current section
-                    current_content.append(text)
-
-            # Save last section
-            if current_content:
+                    # إذا لم يتطابق مع النمط، يُضاف إلى المحتوى الحالي
+                    current_content.append(text) 
+ 
+                        # Save last section if exists
+            if current_section and current_content:
                 self.sections[current_section] = '\n'.join(current_content)
+            
+            # Build full document text with file header and sections
+            parts = []
+            if self.file_header:
+                parts.append(self.file_header)
+            for section, content in self.sections.items():
+                parts.append(f"=== {section} ===\n{content}\n=== نهاية {section} ===")
+            self.document_text = "\n\n".join(parts)
 
-            # Store full document text
-            self.document_text = '\n\n'.join(para.text for para in doc.paragraphs if para.text.strip())
 
             return True
 
@@ -184,7 +118,7 @@ def ask_gemini(question, context):
     "[أول 50 حرف من النص المقتبس]..."
 
     📖 المصدر:
-    [اسم القسم] - صفحة [رقم الصفحة]
+    [اسم الملف] - [اسم القسم]
 
     2. إذا كانت المعلومات مأخوذة من عدة أقسام:
     **الإجابة:**
@@ -195,8 +129,8 @@ def ask_gemini(question, context):
     [2]: "[أول 30 حرف من النص المقتبس]..."
 
     📖 المصادر:
-    [1]: [اسم القسم الأول] - صفحة [رقم الصفحة]
-    [2]: [اسم القسم الثاني] - صفحة [رقم الصفحة]
+    [1]: [اسم الملف] - [اسم القسم]
+    [2]: [اسم الملف] - [اسم القسم]
 
     3. إذا لم تجد المعلومة في النص، اكتب:
     **الإجابة:** عذراً، لم أجد معلومات في النص تجيب على هذا السؤال.
@@ -235,37 +169,43 @@ def ask_gemini(question, context):
         logger.error(f"Error calling Gemini API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
 
-
 def process_gpt_response(gpt_response):
-    """Format GPT response with numbered references"""
-    # Check if it's a "no information found" response
+    """Format GPT response with numbered references using detected file name and section header."""
+    # Check if the response indicates no information was found
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
 
-    # Handle both single and multiple sources
+    # Extract the sources section from the GPT response
     sources_section = None
-
     if "📖 المصدر:" in gpt_response:
-        # Convert single source format to multiple source format
+        # Convert single source format to multiple sources format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
     elif "📖 المصادر:" in gpt_response:
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
 
+    # Dynamically extract the file name from the global DocumentProcessor instance's file_header
+    file_name = "Unknown File"
+    try:
+        # Assume DOC_PROCESSOR is a global instance of DocumentProcessor
+        header_text = DOC_PROCESSOR.file_header  # e.g., "### اسم الملف: التقرير السنوي ٢٠٢٢ ###"
+        match = re.search(r'اسم الملف:\s*(.*?)\s*#', header_text)
+        if match:
+            file_name = match.group(1).strip()
+    except Exception as e:
+        file_name = "Unknown File"
+
+    # If sources section is found, process each reference line
     if sources_section:
         sources_text = sources_section.group(1)
         modified_sources = []
-
-        # Process each reference line
-        for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\s*-|\n|$)', sources_text):
+        # Iterate over each reference line using regex
+        for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\n|$)', sources_text):
             ref_num = ref_match.group(1)
             section_name = ref_match.group(2).strip()
-            page_number = TOC_PAGE_MAP.get(section_name)
-            if page_number:
-                modified_sources.append(f'[{ref_num}]: {section_name} - صفحة {page_number}')
-
+            # Format reference as: [ref_num]: {file_name} - {section_name}
+            modified_sources.append(f'[{ref_num}]: {file_name} - {section_name}')
         if modified_sources:
-            # Replace the sources section while preserving the rest of the response
             new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
             gpt_response = re.sub(
                 r'📖 المصادر:.*?(?=\*\*|\n\n|\Z)',
@@ -277,9 +217,13 @@ def process_gpt_response(gpt_response):
     return gpt_response
 
 
-# Initialize document processor
+
+
+
+# Create a global instance of DocumentProcessor and load the document
 DOC_PROCESSOR = DocumentProcessor()
-DOC_PROCESSOR.load_document()
+if not DOC_PROCESSOR.load_document():
+    logger.error("Failed to load the document.")
 
 
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
@@ -324,7 +268,7 @@ def list_sections():
         sections.append({
             "title": section,
             "char_count": len(content),
-            "page": TOC_PAGE_MAP.get(section, "غير متوفر")
+            
         })
 
     return jsonify({"sections": sections})
