@@ -2,9 +2,9 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import logging
 import os
-from docx import Document
 import re
-import google.generativeai as genai  # Changed from OpenAI to Gemini
+import json
+from openai import OpenAI
 
 # Set up logging
 logging.basicConfig(
@@ -13,100 +13,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-DOCUMENT_PATH = os.getenv('DOCUMENT_PATH', 'test_second.docx')
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # New API key for Gemini
+JSON_FILE_PATH = os.getenv('JSON_FILE_PATH', 'report_2016.json')
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
-CORS(app,
-     resources={
-         r"/api/*": {
-             "origins": ["https://superlative-belekoy-1319b4.netlify.app"],
-             "methods": ["POST", "OPTIONS"],
-             "allow_headers": ["Content-Type"],
-             "expose_headers": ["Access-Control-Allow-Origin"],
-             "supports_credentials": True
-         }
-     })
+CORS(app, 
+    resources={
+        r"/api/*": {
+            "origins": ["https://superlative-belekoy-1319b4.netlify.app"],
+            "methods": ["POST", "OPTIONS"],
+            "allow_headers": ["Content-Type"],
+            "expose_headers": ["Access-Control-Allow-Origin"],
+            "supports_credentials": True
+        }
+    })
 
+# Load JSON data at server startup
+REPORT_DATA = []
 
-
-class DocumentProcessor:
-    def __init__(self):
-        self.sections = {}
-        self.document_text = "" 
-        self.file_header = "" 
-
-    def load_document(self):
-        try:
-            current_dir = os.getcwd()
-            logger.info(f"Current working directory: {current_dir}")
-
-            doc_path = os.path.join(current_dir, DOCUMENT_PATH)
-            if not os.path.exists(doc_path):
-                logger.error("Document not found")
-                return False
-            logger.info(f"Loading document from: {doc_path}")
-
-            doc = Document(doc_path) 
-                       # Initialize with first header or default
-            current_section = None
-            current_content = []
-            header_pattern = re.compile(r'^(#{3,})\s*(.+?)\s*\1$')
-
-
-
-
-            # Process document using regex to detect headers
-            for paragraph in doc.paragraphs:
-                text = paragraph.text.strip()
-                if not text:
-                    continue
-
-                match = header_pattern.match(text)
-                if match:
-                    level = len(match.group(1))
-                    header_text = match.group(2).strip()
-                    logger.debug(f"Found header: {header_text} with level {level}")
-                    if level == 3:
-                        # إذا كانت العلامات ثلاث (###): هذا عنوان الملف
-                        self.file_header = text
-                        continue  # لا تُضيف إلى أي قسم
-                    elif level >= 4:
-                        # إذا كانت العلامات أربع أو أكثر: هذا عنوان قسم
-                        if current_section and current_content:
-                            self.sections[current_section] = '\n'.join(current_content)
-                        current_section = header_text
-                        current_content = []
-                        continue
-                else:
-                    # إذا لم يتطابق مع النمط، يُضاف إلى المحتوى الحالي
-                    current_content.append(text) 
- 
-                        # Save last section if exists
-            if current_section and current_content:
-                self.sections[current_section] = '\n'.join(current_content)
+def load_json_data():
+    """Load and preprocess the JSON file at server startup"""
+    global REPORT_DATA
+    try:
+        current_dir = os.getcwd()
+        logger.info(f"Current working directory: {current_dir}")
+        
+        json_path = os.path.join(current_dir, JSON_FILE_PATH)
+        logger.info(f"Loading JSON file from: {json_path}")
+        
+        with open(json_path, 'r', encoding='utf-8') as file:
+            REPORT_DATA = json.load(file)
             
-            # Build full document text with file header and sections
-            parts = []
-            if self.file_header:
-                parts.append(self.file_header)
-            for section, content in self.sections.items():
-                parts.append(f"=== {section} ===\n{content}\n=== نهاية {section} ===")
-            self.document_text = "\n\n".join(parts)
+        logger.info(f"Successfully loaded {len(REPORT_DATA)} sections from JSON file")
+        return True
+    except Exception as e:
+        logger.error(f"Error loading JSON file: {str(e)}", exc_info=True)
+        return False
 
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error loading document: {str(e)}", exc_info=True)
-            return False
-
-
-def ask_gemini(question, context):
-    """Send the document and question to Gemini API."""
-    genai.configure(api_key=GEMINI_API_KEY)  # Configure the library with your API key
-    model = genai.GenerativeModel('gemini-2.0-flash-thinking-exp')
-
+def ask_gpt4(question, context):
+    """Send the document and question to OpenAI GPT-4 API."""
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
 
@@ -116,7 +63,7 @@ def ask_gemini(question, context):
 
     **النص الأصلي:**
     "[أول 50 حرف من النص المقتبس]..."
-
+    
     📖 المصدر:
     [اسم الملف] - [اسم القسم]
 
@@ -127,7 +74,7 @@ def ask_gemini(question, context):
     **النص الأصلي:**
     [1]: "[أول 30 حرف من النص المقتبس]..."
     [2]: "[أول 30 حرف من النص المقتبس]..."
-
+    
     📖 المصادر:
     [1]: [اسم الملف] - [اسم القسم]
     [2]: [اسم الملف] - [اسم القسم]
@@ -151,128 +98,93 @@ def ask_gemini(question, context):
 سؤال المستخدم: {question}"""
 
     try:
-        # Combine system_prompt and user_message into a single message
-        combined_message = system_prompt + "\n\n" + user_message
-
-        response = model.generate_content(
-            combined_message,
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 1500
-            }
+        response = client.chat.completions.create(
+            model="chatgpt-4o-latest",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1,
+            max_tokens=1500
         )
-        gemini_response = response.text
-
-        return process_gpt_response(gemini_response)
-
+        
+        gpt_response = response.choices[0].message.content
+        return process_gpt_response(gpt_response)
+            
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {str(e)}")
+        logger.error(f"Error calling OpenAI API: {str(e)}")
         return "حدث خطأ في معالجة الطلب."
 
 def process_gpt_response(gpt_response):
-    """Format GPT response with numbered references using detected file name and section header."""
-    # Check if the response indicates no information was found
+    """Format GPT response with simplified reference format"""
+    # Check if it's a "no information found" response
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
-
-    # Extract the sources section from the GPT response
+        
+    # Handle both single and multiple sources
     sources_section = None
+    
     if "📖 المصدر:" in gpt_response:
-        # Convert single source format to multiple sources format
+        # Convert single source format to multiple source format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
     elif "📖 المصادر:" in gpt_response:
         sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
-
-    # Dynamically extract the file name from the global DocumentProcessor instance's file_header
-    file_name = "Unknown File"
-    try:
-        # Assume DOC_PROCESSOR is a global instance of DocumentProcessor
-        header_text = DOC_PROCESSOR.file_header  # e.g., "### اسم الملف: التقرير السنوي ٢٠٢٢ ###"
-        match = re.search(r'اسم الملف:\s*(.*?)\s*#', header_text)
-        if match:
-            file_name = match.group(1).strip()
-    except Exception as e:
-        file_name = "Unknown File"
-
-    # If sources section is found, process each reference line
-    if sources_section:
-        sources_text = sources_section.group(1)
-        modified_sources = []
-        # Iterate over each reference line using regex
-        for ref_match in re.finditer(r'\[(\d+)\]:\s*(.*?)(?=\n|$)', sources_text):
-            ref_num = ref_match.group(1)
-            section_name = ref_match.group(2).strip()
-            # Format reference as: [ref_num]: {file_name} - {section_name}
-            modified_sources.append(f'[{ref_num}]: {file_name} - {section_name}')
-        if modified_sources:
-            new_sources = '📖 المصادر:\n' + '\n'.join(modified_sources)
-            gpt_response = re.sub(
-                r'📖 المصادر:.*?(?=\*\*|\n\n|\Z)',
-                new_sources,
-                gpt_response,
-                flags=re.DOTALL
-            )
-
+    
+    # We're not modifying the sources as we don't need page numbers anymore
+    # The GPT response already contains the correct format for the sources
+    
     return gpt_response
-
-
-
-
-
-# Create a global instance of DocumentProcessor and load the document
-DOC_PROCESSOR = DocumentProcessor()
-if not DOC_PROCESSOR.load_document():
-    logger.error("Failed to load the document.")
-
 
 @app.route('/api/ask', methods=['POST', 'OPTIONS'])
 def ask_question():
     if request.method == "OPTIONS":
         return _build_cors_preflight_response()
-
+    
     data = request.json
     question = data.get('question')
-
+    
     if not question:
         return jsonify({"error": "لم يتم تقديم سؤال"}), 400
 
     logger.info(f"Received question: {question}")
+    
+    if not REPORT_DATA:
+        return jsonify({"error": "لم يتم تحميل البيانات بشكل صحيح."}), 500
 
-    if not DOC_PROCESSOR.sections:
-        return jsonify({"error": "لم يتم تحميل الوثيقة بشكل صحيح."}), 500
-
-    # Format document sections
+    # Format JSON data as context
     context_parts = []
-    for section, content in DOC_PROCESSOR.sections.items():
+    for section in REPORT_DATA:
+        file_name = section.get('file_name', '')
+        section_header = section.get('section_header', '')
+        content = section.get('content', '')
+        
         context_parts.append(f"""
-=== {section} ===
+=== {section_header} ===
 {content}
-=== نهاية {section} ===
+=== نهاية {section_header} ===
 """)
-
+    
     context = "\n\n".join(context_parts)
-
-    answer = ask_gemini(question, context)
+    
+    answer = ask_gpt4(question, context)
     return jsonify({"answer": answer})
-
 
 @app.route('/api/sections', methods=['GET'])
 def list_sections():
-    """Debug endpoint to list all document sections"""
-    if not DOC_PROCESSOR.sections:
-        return jsonify({"error": "Document not loaded"}), 500
-
+    """Endpoint to list all document sections"""
+    if not REPORT_DATA:
+        return jsonify({"error": "JSON data not loaded"}), 500
+        
     sections = []
-    for section, content in DOC_PROCESSOR.sections.items():
+    for section in REPORT_DATA:
         sections.append({
-            "title": section,
-            "char_count": len(content),
-            
+            "file_name": section.get('file_name', ''),
+            "title": section.get('section_header', ''),
+            "char_count": len(section.get('content', '')),
         })
-
+    
     return jsonify({"sections": sections})
-
 
 def _build_cors_preflight_response():
     response = make_response()
@@ -281,16 +193,17 @@ def _build_cors_preflight_response():
     response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
     return response
 
-
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         "status": "healthy",
-        "document_loaded": bool(DOC_PROCESSOR.sections),
-        "document_path": DOCUMENT_PATH,
-        "sections_count": len(DOC_PROCESSOR.sections)
+        "document_loaded": bool(REPORT_DATA),
+        "json_file_path": JSON_FILE_PATH,
+        "sections_count": len(REPORT_DATA)
     }), 200
 
+# Load the JSON data when the server starts
+load_json_data()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
