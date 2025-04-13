@@ -13,9 +13,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-# Update to handle multiple JSON files
-JSON_FILE_PATH_2016 = os.getenv('JSON_FILE_PATH_2016', 'report_2016.json')
-JSON_FILE_PATH_2017 = os.getenv('JSON_FILE_PATH_2017', 'report_2017.json')
+# Update to handle multiple JSON files dynamically
+JSON_FILE_PATHS = os.getenv('JSON_FILE_PATHS', 'report_2016.json,report_2017.json,report_2018.json')
+# Convert the comma-separated string into a list
+JSON_FILES = [path.strip() for path in JSON_FILE_PATHS.split(',')]
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
@@ -34,39 +35,36 @@ CORS(app,
 REPORT_DATA = []
 
 def load_json_data():
-    """Load and preprocess both JSON files at server startup"""
+    """Load and preprocess all JSON files at server startup"""
     global REPORT_DATA
     try:
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
         
-        # Load 2016 report
-        json_path_2016 = os.path.join(current_dir, JSON_FILE_PATH_2016)
-        logger.info(f"Loading 2016 JSON file from: {json_path_2016}")
+        REPORT_DATA = []  # Reset the global data
         
-        with open(json_path_2016, 'r', encoding='utf-8') as file:
-            report_data_2016 = json.load(file)
-        
-        logger.info(f"Successfully loaded {len(report_data_2016)} sections from 2016 report")
-        
-        # Load 2017 report
-        json_path_2017 = os.path.join(current_dir, JSON_FILE_PATH_2017)
-        logger.info(f"Loading 2017 JSON file from: {json_path_2017}")
-        
-        try:
-            with open(json_path_2017, 'r', encoding='utf-8') as file:
-                report_data_2017 = json.load(file)
+        # Process each JSON file in the list
+        for json_file in JSON_FILES:
+            json_path = os.path.join(current_dir, json_file)
+            logger.info(f"Loading JSON file from: {json_path}")
             
-            logger.info(f"Successfully loaded {len(report_data_2017)} sections from 2017 report")
-            
-            # Combine both reports into one list
-            REPORT_DATA = report_data_2016 + report_data_2017
-            
-            logger.info(f"Combined {len(REPORT_DATA)} total sections from both reports")
-        except FileNotFoundError:
-            # Handle case where 2017 report doesn't exist yet
-            logger.warning(f"2017 report file not found. Using only 2016 report.")
-            REPORT_DATA = report_data_2016
+            try:
+                with open(json_path, 'r', encoding='utf-8') as file:
+                    report_data = json.load(file)
+                
+                logger.info(f"Successfully loaded {len(report_data)} sections from {json_file}")
+                REPORT_DATA.extend(report_data)  # Add to global data
+                
+            except FileNotFoundError:
+                logger.warning(f"Report file {json_file} not found. Skipping.")
+            except json.JSONDecodeError:
+                logger.error(f"Error parsing JSON in {json_file}. Skipping this file.")
+        
+        logger.info(f"Combined {len(REPORT_DATA)} total sections from all reports")
+        
+        if not REPORT_DATA:
+            logger.error("No data was loaded from any report files.")
+            return False
             
         return True
     except Exception as e:
@@ -271,7 +269,7 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "document_loaded": bool(REPORT_DATA),
-        "json_files": [JSON_FILE_PATH_2016, JSON_FILE_PATH_2017],
+        "json_files": JSON_FILES,
         "sections_count": len(REPORT_DATA)
     }), 200
 
