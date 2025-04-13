@@ -4,4 +4,4 @@ python-dotenv
 requests
 python-docx
 gunicorn
-google-generativeai
+openai
