@@ -61,8 +61,8 @@ def ask_gpt4(question, context):
     
     system_prompt = f"""أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
 
-إذا كان المستخدم يرسل تحية أو عبارة ترحيب فقط (على سبيل المثال "السلام عليكم" أو "مرحبا" أو "صباح الخير") دون طرح سؤال محدد، يجب عليك الرد برسالة ودية مثل:
-"وعليكم السلام ورحمة الله وبركاته، كيف يمكنني مساعدتك اليوم؟ أنا هنا للإجابة على أسئلتك حول {file_name}."
+إذا كان المستخدم يرسل فقط تحية أو سلام (مثل "السلام عليكم" أو "مرحبا" أو "صباح الخير")، رد بتحية مناسبة ومحترمة متبوعة بعبارة مثل:
+"كيف يمكنني مساعدتك اليوم؟ أنا هنا للإجابة على أسئلتك حول تقارير كاكست السنويه."
 
 ولكن، إذا كان المستخدم يطرح سؤالاً محدداً، عليك أن تبحث في جميع الأقسام المتاحة وتجيب وفقاً للقواعد التالية:
 
@@ -130,8 +130,13 @@ def process_gpt_response(gpt_response):
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
     
-    # If it's a greeting response, return it as is
-    if "وعليكم السلام" in gpt_response or "أهلاً" in gpt_response or "مرحباً" in gpt_response:
+    # Check if it's a greeting response (containing common greeting responses or mentions of KACST)
+    greeting_indicators = [
+        "وعليكم السلام", "أهلاً", "مرحباً", "صباح النور", 
+        "تقارير كاكست", "كيف يمكنني مساعدتك", "كاكست"
+    ]
+    
+    if any(indicator in gpt_response for indicator in greeting_indicators):
         return gpt_response
     
     # Extract file name from the first section
