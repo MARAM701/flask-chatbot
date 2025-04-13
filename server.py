@@ -13,7 +13,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('server')
 
-JSON_FILE_PATH = os.getenv('JSON_FILE_PATH', 'report_2016.json')
+# Update to handle multiple JSON files
+JSON_FILE_PATH_2016 = os.getenv('JSON_FILE_PATH_2016', 'report_2016.json')
+JSON_FILE_PATH_2017 = os.getenv('JSON_FILE_PATH_2017', 'report_2017.json')
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
@@ -32,34 +34,53 @@ CORS(app,
 REPORT_DATA = []
 
 def load_json_data():
-    """Load and preprocess the JSON file at server startup"""
+    """Load and preprocess both JSON files at server startup"""
     global REPORT_DATA
     try:
         current_dir = os.getcwd()
         logger.info(f"Current working directory: {current_dir}")
         
-        json_path = os.path.join(current_dir, JSON_FILE_PATH)
-        logger.info(f"Loading JSON file from: {json_path}")
+        # Load 2016 report
+        json_path_2016 = os.path.join(current_dir, JSON_FILE_PATH_2016)
+        logger.info(f"Loading 2016 JSON file from: {json_path_2016}")
         
-        with open(json_path, 'r', encoding='utf-8') as file:
-            REPORT_DATA = json.load(file)
+        with open(json_path_2016, 'r', encoding='utf-8') as file:
+            report_data_2016 = json.load(file)
+        
+        logger.info(f"Successfully loaded {len(report_data_2016)} sections from 2016 report")
+        
+        # Load 2017 report
+        json_path_2017 = os.path.join(current_dir, JSON_FILE_PATH_2017)
+        logger.info(f"Loading 2017 JSON file from: {json_path_2017}")
+        
+        try:
+            with open(json_path_2017, 'r', encoding='utf-8') as file:
+                report_data_2017 = json.load(file)
             
-        logger.info(f"Successfully loaded {len(REPORT_DATA)} sections from JSON file")
+            logger.info(f"Successfully loaded {len(report_data_2017)} sections from 2017 report")
+            
+            # Combine both reports into one list
+            REPORT_DATA = report_data_2016 + report_data_2017
+            
+            logger.info(f"Combined {len(REPORT_DATA)} total sections from both reports")
+        except FileNotFoundError:
+            # Handle case where 2017 report doesn't exist yet
+            logger.warning(f"2017 report file not found. Using only 2016 report.")
+            REPORT_DATA = report_data_2016
+            
         return True
     except Exception as e:
-        logger.error(f"Error loading JSON file: {str(e)}", exc_info=True)
+        logger.error(f"Error loading JSON files: {str(e)}", exc_info=True)
         return False
 
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
     
-    # Extract the file name from the first section (assuming all sections have the same file name)
-    file_name = "التقرير السنوي"
-    if REPORT_DATA:
-        file_name = REPORT_DATA[0].get("file_name", file_name)
+    # No need to extract a single file name since we now have multiple files
+    # Each section has its own file_name field
     
-    system_prompt = f"""أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
+    system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
 
 إذا كان المستخدم يرسل فقط تحية أو سلام (مثل "السلام عليكم" أو "مرحبا" أو "صباح الخير")، رد بتحية مناسبة ومحترمة متبوعة بعبارة مثل:
 "كيف يمكنني مساعدتك اليوم؟ أنا هنا للإجابة على أسئلتك حول تقارير كاكست السنويه."
@@ -74,7 +95,7 @@ def ask_gpt4(question, context):
 "[أول 50 حرف من النص المقتبس]..."
     
 📖 المصدر:
-{file_name} - [اسم القسم]
+[اسم الملف] - [اسم القسم]
 
 2. إذا كانت المعلومات مأخوذة من عدة أقسام:
 **الإجابة:**
@@ -85,8 +106,8 @@ def ask_gpt4(question, context):
 [2]: "[أول 30 حرف من النص المقتبس]..."
     
 📖 المصادر:
-[1]: {file_name} - [اسم القسم]
-[2]: {file_name} - [اسم القسم]
+[1]: [اسم الملف للقسم الأول] - [اسم القسم الأول]
+[2]: [اسم الملف للقسم الثاني] - [اسم القسم الثاني]
 
 3. إذا لم تجد المعلومة في النص، اكتب:
 **الإجابة:** عذراً، لم أجد معلومات في النص تجيب على هذا السؤال.
@@ -139,24 +160,27 @@ def process_gpt_response(gpt_response):
     if any(indicator in gpt_response for indicator in greeting_indicators):
         return gpt_response
     
-    # Extract file name from the first section
-    file_name = "التقرير السنوي"
-    if REPORT_DATA:
-        file_name = REPORT_DATA[0].get("file_name", file_name)
-    
     # Handle both single and multiple sources
     if "📖 المصدر:" in gpt_response:
         # Convert single source format to multiple source format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
     
     # Find all section references in the format "[1]: [اسم القسم]" or "[1]: النص - [اسم القسم]"
-    # and replace them with "[1]: {file_name} - [اسم القسم]"
+    # and replace them with "[1]: {file_name} - [اسم القسم]" if needed
     ref_pattern = r'\[(\d+)\]:\s*(النص|[^\-]+)?\s*-?\s*([^-\n]+)'
     
     def replace_reference(match):
         ref_num = match.group(1)
         section_name = match.group(3).strip()
-        return f'[{ref_num}]: {file_name} - {section_name}'
+        
+        # Try to find the matching section in REPORT_DATA
+        for section in REPORT_DATA:
+            if section.get('section_header') == section_name:
+                file_name = section.get('file_name', "التقرير السنوي")
+                return f'[{ref_num}]: {file_name} - {section_name}'
+        
+        # If not found, use a default file name
+        return f'[{ref_num}]: التقرير السنوي - {section_name}'
     
     # Apply the replacement to the entire response
     gpt_response = re.sub(ref_pattern, replace_reference, gpt_response)
@@ -225,7 +249,7 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "document_loaded": bool(REPORT_DATA),
-        "json_file_path": JSON_FILE_PATH,
+        "json_files": [JSON_FILE_PATH_2016, JSON_FILE_PATH_2017],
         "sections_count": len(REPORT_DATA)
     }), 200
 
