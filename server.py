@@ -127,7 +127,7 @@ def ask_gpt4(question, context):
 
     try:
         response = client.chat.completions.create(
-            model="o3-mini",
+            model="chatgpt-4o-latest",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
