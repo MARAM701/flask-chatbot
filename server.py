@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger('server')
 
 # Update to handle multiple JSON files dynamically
-JSON_FILE_PATHS = os.getenv('JSON_FILE_PATHS', 'report_2016.json,report_2017.json,report_2018.json,report_2019.json')
+JSON_FILE_PATHS = os.getenv('JSON_FILE_PATHS', 'report_2016.json,report_2017.json,report_2018.json,report_2019.json,report_2020.json,report_2021.json,report_2022.json,report_2023.json')
 # Convert the comma-separated string into a list
 JSON_FILES = [path.strip() for path in JSON_FILE_PATHS.split(',')]
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
