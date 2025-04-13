@@ -54,7 +54,12 @@ def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
     
-    system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
+    # Extract the file name from the first section (assuming all sections have the same file name)
+    file_name = "التقرير السنوي"
+    if REPORT_DATA:
+        file_name = REPORT_DATA[0].get("file_name", file_name)
+    
+    system_prompt = f"""أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
     يجب عليك البحث في جميع الأقسام المتوفرة والالتزام بالقواعد التالية بشكل صارم:
 
     1. إذا كانت المعلومات مأخوذة من قسم واحد فقط:
@@ -65,7 +70,7 @@ def ask_gpt4(question, context):
     "[أول 50 حرف من النص المقتبس]..."
     
     📖 المصدر:
-    [اسم الملف] - [اسم القسم]
+    {file_name} - [اسم القسم]
 
     2. إذا كانت المعلومات مأخوذة من عدة أقسام:
     **الإجابة:**
@@ -76,8 +81,8 @@ def ask_gpt4(question, context):
     [2]: "[أول 30 حرف من النص المقتبس]..."
     
     📖 المصادر:
-    [1]: [اسم الملف] - [اسم القسم]
-    [2]: [اسم الملف] - [اسم القسم]
+    [1]: {file_name} - [اسم القسم]
+    [2]: {file_name} - [اسم القسم]
 
     3. إذا لم تجد المعلومة في النص، اكتب:
     **الإجابة:** عذراً، لم أجد معلومات في النص تجيب على هذا السؤال.
@@ -116,23 +121,32 @@ def ask_gpt4(question, context):
         return "حدث خطأ في معالجة الطلب."
 
 def process_gpt_response(gpt_response):
-    """Format GPT response with simplified reference format"""
+    """Format GPT response with proper file name in reference format"""
     # Check if it's a "no information found" response
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
-        
-    # Handle both single and multiple sources
-    sources_section = None
     
+    # Extract file name from the first section
+    file_name = "التقرير السنوي"
+    if REPORT_DATA:
+        file_name = REPORT_DATA[0].get("file_name", file_name)
+    
+    # Handle both single and multiple sources
     if "📖 المصدر:" in gpt_response:
         # Convert single source format to multiple source format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
-        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
-    elif "📖 المصادر:" in gpt_response:
-        sources_section = re.search(r'📖 المصادر:(.*?)(?=\*\*|\n\n|\Z)', gpt_response, re.DOTALL)
     
-    # We're not modifying the sources as we don't need page numbers anymore
-    # The GPT response already contains the correct format for the sources
+    # Find all section references in the format "[1]: [اسم القسم]" or "[1]: النص - [اسم القسم]"
+    # and replace them with "[1]: {file_name} - [اسم القسم]"
+    ref_pattern = r'\[(\d+)\]:\s*(النص|[^\-]+)?\s*-?\s*([^-\n]+)'
+    
+    def replace_reference(match):
+        ref_num = match.group(1)
+        section_name = match.group(3).strip()
+        return f'[{ref_num}]: {file_name} - {section_name}'
+    
+    # Apply the replacement to the entire response
+    gpt_response = re.sub(ref_pattern, replace_reference, gpt_response)
     
     return gpt_response
 
