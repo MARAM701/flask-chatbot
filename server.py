@@ -146,7 +146,7 @@ def ask_gpt4(question, context):
         return "حدث خطأ في معالجة الطلب."
 
 def process_gpt_response(gpt_response):
-    """Format GPT response with proper file name in reference format"""
+    """Format GPT response using the exact file_name and section_header from JSON data"""
     # Check if it's a "no information found" response
     if "عذراً، لم أجد معلومات" in gpt_response:
         return gpt_response
@@ -165,25 +165,47 @@ def process_gpt_response(gpt_response):
         # Convert single source format to multiple source format
         gpt_response = gpt_response.replace("📖 المصدر:", "📖 المصادر:\n[1]:")
     
-    # Find all section references in the format "[1]: [اسم القسم]" or "[1]: النص - [اسم القسم]"
-    # and replace them with "[1]: {file_name} - [اسم القسم]" if needed
-    ref_pattern = r'\[(\d+)\]:\s*(النص|[^\-]+)?\s*-?\s*([^-\n]+)'
-    
-    def replace_reference(match):
-        ref_num = match.group(1)
-        section_name = match.group(3).strip()
+    # Find all section references in the format after "📖 المصادر:"
+    if "📖 المصادر:" in gpt_response:
+        parts = gpt_response.split("📖 المصادر:")
+        pre_sources = parts[0]
+        sources_section = parts[1]
         
-        # Try to find the matching section in REPORT_DATA
-        for section in REPORT_DATA:
-            if section.get('section_header') == section_name:
-                file_name = section.get('file_name', "التقرير السنوي")
-                return f'[{ref_num}]: {file_name} - {section_name}'
+        # Process each line in the sources section
+        processed_lines = []
+        for line in sources_section.strip().split('\n'):
+            # Match reference pattern [N]: any text
+            match = re.match(r'\[(\d+)\]:\s*(.*?)$', line.strip())
+            if match:
+                ref_num = match.group(1)
+                section_text = match.group(2).strip()
+                
+                # Extract section name (the last part after any dashes)
+                if " - " in section_text:
+                    parts = section_text.split(" - ")
+                    section_name = parts[-1].strip()
+                else:
+                    section_name = section_text.strip()
+                
+                # Try to find the section in REPORT_DATA to get the correct file name
+                found = False
+                for section in REPORT_DATA:
+                    if section.get('section_header') == section_name:
+                        file_name = section.get('file_name')
+                        processed_lines.append(f'[{ref_num}]: {file_name} - {section_name}')
+                        found = True
+                        break
+                
+                if not found:
+                    # If section not found in REPORT_DATA, use default format
+                    processed_lines.append(f'[{ref_num}]: التقرير السنوي - {section_name}')
+            else:
+                # Keep non-reference lines but only if they're not empty
+                if line.strip():
+                    processed_lines.append(line)
         
-        # If not found, use a default file name
-        return f'[{ref_num}]: التقرير السنوي - {section_name}'
-    
-    # Apply the replacement to the entire response
-    gpt_response = re.sub(ref_pattern, replace_reference, gpt_response)
+        # Reconstruct the response with updated sources
+        gpt_response = pre_sources + "📖 المصادر:\n" + "\n".join(processed_lines)
     
     return gpt_response
 
