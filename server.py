@@ -4,7 +4,9 @@ import logging
 import os
 import re
 import json
+import numpy as np
 from openai import OpenAI
+from numpy.linalg import norm
 
 # Set up logging
 logging.basicConfig(
@@ -34,6 +36,23 @@ CORS(app,
 # Load JSON data at server startup
 REPORT_DATA = []
 
+def cosine_similarity(a, b):
+    """Calculate cosine similarity between two vectors"""
+    return np.dot(a, b) / (norm(a) * norm(b))
+
+def create_embedding(text):
+    """Create embedding for a given text using OpenAI's API"""
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    try:
+        response = client.embeddings.create(
+            model="text-embedding-3-large",
+            input=text
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        logger.error(f"Error creating embedding: {str(e)}")
+        return None
+
 def load_json_data():
     """Load and preprocess all JSON files at server startup"""
     global REPORT_DATA
@@ -62,6 +81,13 @@ def load_json_data():
         
         logger.info(f"Combined {len(REPORT_DATA)} total sections from all reports")
         
+        # Add embeddings to each section if not already present
+        for section in REPORT_DATA:
+            if "embedding" not in section:
+                logger.info(f"Creating embedding for section: {section.get('section_header', 'Unknown')}")
+                section_content = section.get('content', '')
+                section["embedding"] = create_embedding(section_content)
+        
         if not REPORT_DATA:
             logger.error("No data was loaded from any report files.")
             return False
@@ -74,9 +100,6 @@ def load_json_data():
 def ask_gpt4(question, context):
     """Send the document and question to OpenAI GPT-4 API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
-    
-    # No need to extract a single file name since we now have multiple files
-    # Each section has its own file_name field
     
     system_prompt = """أنت مساعد متخصص في تحليل النصوص العربية والإجابة على الأسئلة بدقة عالية.
 
@@ -178,25 +201,33 @@ def process_gpt_response(gpt_response):
                 ref_num = match.group(1)
                 section_text = match.group(2).strip()
                 
-                # Extract section name (the last part after any dashes)
-                if " - " in section_text:
-                    parts = section_text.split(" - ")
-                    section_name = parts[-1].strip()
-                else:
-                    section_name = section_text.strip()
-                
-                # Try to find the section in REPORT_DATA to get the correct file name
+                # Try to find an exact match first using the full string
                 found = False
                 for section in REPORT_DATA:
-                    if section.get('section_header') == section_name:
-                        file_name = section.get('file_name')
-                        processed_lines.append(f'[{ref_num}]: {file_name} - {section_name}')
+                    exact_match = f"{section.get('file_name')} - {section.get('section_header')}"
+                    if exact_match == section_text:
+                        processed_lines.append(f'[{ref_num}]: {exact_match}')
                         found = True
                         break
                 
+                # If no exact match, try to match by section_header only
                 if not found:
-                    # If section not found in REPORT_DATA, use default format
-                    processed_lines.append(f'[{ref_num}]: التقرير السنوي - {section_name}')
+                    section_name = section_text
+                    # Extract section name if it contains a dash
+                    if " - " in section_text:
+                        parts = section_text.split(" - ")
+                        section_name = parts[-1].strip()
+                    
+                    for section in REPORT_DATA:
+                        if section.get('section_header') == section_name:
+                            file_name = section.get('file_name')
+                            processed_lines.append(f'[{ref_num}]: {file_name} - {section_name}')
+                            found = True
+                            break
+                
+                # If still not found, use unknown source
+                if not found:
+                    processed_lines.append(f'[{ref_num}]: غير معروف - {section_name}')
             else:
                 # Keep non-reference lines but only if they're not empty
                 if line.strip():
@@ -223,20 +254,53 @@ def ask_question():
     if not REPORT_DATA:
         return jsonify({"error": "لم يتم تحميل البيانات بشكل صحيح."}), 500
 
-    # Format JSON data as context
-    context_parts = []
-    for section in REPORT_DATA:
-        file_name = section.get('file_name', '')
-        section_header = section.get('section_header', '')
-        content = section.get('content', '')
+    # Create embedding for the question
+    question_embedding = create_embedding(question)
+    
+    if question_embedding:
+        # Calculate similarity with all sections and get top 5
+        similarities = []
+        for i, section in enumerate(REPORT_DATA):
+            section_embedding = section.get('embedding')
+            if section_embedding:
+                similarity = cosine_similarity(question_embedding, section_embedding)
+                similarities.append((i, similarity))
         
-        context_parts.append(f"""
+        # Sort by similarity (descending) and take top 5
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        top_sections = similarities[:5]
+        
+        # Format context with only the top 5 most relevant sections
+        context_parts = []
+        for idx, _ in top_sections:
+            section = REPORT_DATA[idx]
+            file_name = section.get('file_name', '')
+            section_header = section.get('section_header', '')
+            content = section.get('content', '')
+            
+            context_parts.append(f"""
 === المصدر: {file_name} - القسم: {section_header} ===
 {content}
 === نهاية القسم: {section_header} من المصدر: {file_name} ===
 """)
-    
-    context = "\n\n".join(context_parts)
+        
+        context = "\n\n".join(context_parts)
+    else:
+        # Fallback to using all sections if embedding fails
+        logger.warning("Question embedding failed, using all sections as context")
+        context_parts = []
+        for section in REPORT_DATA:
+            file_name = section.get('file_name', '')
+            section_header = section.get('section_header', '')
+            content = section.get('content', '')
+            
+            context_parts.append(f"""
+=== المصدر: {file_name} - القسم: {section_header} ===
+{content}
+=== نهاية القسم: {section_header} من المصدر: {file_name} ===
+""")
+        
+        context = "\n\n".join(context_parts)
     
     answer = ask_gpt4(question, context)
     return jsonify({"answer": answer})
@@ -270,7 +334,8 @@ def health_check():
         "status": "healthy",
         "document_loaded": bool(REPORT_DATA),
         "json_files": JSON_FILES,
-        "sections_count": len(REPORT_DATA)
+        "sections_count": len(REPORT_DATA),
+        "sections_with_embeddings": sum(1 for section in REPORT_DATA if "embedding" in section)
     }), 200
 
 # Load the JSON data when the server starts
