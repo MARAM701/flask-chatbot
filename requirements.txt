@@ -5,3 +5,4 @@ requests
 python-docx
 gunicorn
 openai
+numpy
